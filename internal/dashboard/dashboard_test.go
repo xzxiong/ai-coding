@@ -103,6 +103,78 @@ func TestHandler_APIUsage_RangeFilter(t *testing.T) {
 	}
 }
 
+func TestHandler_APIUsage_Pagination(t *testing.T) {
+	store := newTestStore(t)
+	for i := 0; i < 5; i++ {
+		store.Record(storage.UsageRecord{
+			Timestamp:   time.Now(),
+			Model:       "gpt-4o",
+			InputTokens: 10 * (i + 1),
+			OutputTokens: 5,
+			TotalTokens: 10*(i+1) + 5,
+			Duration:    100,
+		})
+	}
+
+	h := NewHandler(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/usage?page=1&page_size=2", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var resp map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	if int(resp["total_requests"].(float64)) != 5 {
+		t.Errorf("expected 5 total requests, got %v", resp["total_requests"])
+	}
+	if int(resp["total_records"].(float64)) != 5 {
+		t.Errorf("expected 5 total records, got %v", resp["total_records"])
+	}
+	if int(resp["total_pages"].(float64)) != 3 {
+		t.Errorf("expected 3 total pages, got %v", resp["total_pages"])
+	}
+	if int(resp["page"].(float64)) != 1 {
+		t.Errorf("expected page 1, got %v", resp["page"])
+	}
+	records := resp["records"].([]any)
+	if len(records) != 2 {
+		t.Errorf("expected 2 records on page 1, got %d", len(records))
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/dashboard/api/usage?page=3&page_size=2", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	records = resp["records"].([]any)
+	if len(records) != 1 {
+		t.Errorf("expected 1 record on page 3, got %d", len(records))
+	}
+}
+
+func TestHandler_APIUsage_PaginationBounds(t *testing.T) {
+	store := newTestStore(t)
+	store.Record(storage.UsageRecord{
+		Timestamp: time.Now(), Model: "gpt-4o",
+		InputTokens: 10, OutputTokens: 5, TotalTokens: 15,
+	})
+
+	h := NewHandler(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/api/usage?page=999&page_size=10", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	var resp map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	records := resp["records"].([]any)
+	if len(records) != 0 {
+		t.Errorf("expected 0 records for out-of-range page, got %d", len(records))
+	}
+}
+
 func TestHandler_DashboardPage(t *testing.T) {
 	h := NewHandler(newTestStore(t))
 	req := httptest.NewRequest(http.MethodGet, "/dashboard/", nil)

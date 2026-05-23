@@ -28,11 +28,19 @@ type AnthropicMessage struct {
 }
 
 type AnthropicContentBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"`
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type   string                `json:"type"`
+	Text   string                `json:"text,omitempty"`
+	ID     string                `json:"id,omitempty"`
+	Name   string                `json:"name,omitempty"`
+	Input  json.RawMessage       `json:"input,omitempty"`
+	Source *AnthropicImageSource `json:"source,omitempty"`
+}
+
+type AnthropicImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 type AnthropicResponse struct {

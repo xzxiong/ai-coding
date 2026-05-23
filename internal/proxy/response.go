@@ -14,10 +14,10 @@ func ConvertOpenAIToAnthropic(resp *model.OpenAIResponse, reqModel string) *mode
 
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
-		if choice.Message.Content != "" {
+		if text, _ := choice.Message.Content.(string); text != "" {
 			content = append(content, model.AnthropicContentBlock{
 				Type: "text",
-				Text: choice.Message.Content,
+				Text: text,
 			})
 		}
 		for _, tc := range choice.Message.ToolCalls {

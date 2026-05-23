@@ -30,11 +30,22 @@ type OpenAIToolFunction struct {
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
 }
 
+type OpenAIContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *OpenAIImageURL `json:"image_url,omitempty"`
+}
+
+type OpenAIImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
 type OpenAIMessage struct {
-	Role       string         `json:"role"`
-	Content    string         `json:"content"`
+	Role       string          `json:"role"`
+	Content    any             `json:"content"`
 	ToolCalls  []OpenAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
 }
 
 type OpenAIResponse struct {

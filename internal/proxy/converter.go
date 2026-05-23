@@ -164,13 +164,23 @@ func convertAssistantBlocks(blocks []map[string]any) ([]model.OpenAIMessage, err
 func convertUserBlocks(blocks []map[string]any) ([]model.OpenAIMessage, error) {
 	var messages []model.OpenAIMessage
 	var textParts []string
+	var contentParts []model.OpenAIContentPart
+	hasImage := false
 
 	for _, block := range blocks {
 		switch block["type"] {
 		case "text":
 			if t, ok := block["text"].(string); ok {
 				textParts = append(textParts, t)
+				contentParts = append(contentParts, model.OpenAIContentPart{Type: "text", Text: t})
 			}
+		case "image":
+			hasImage = true
+			source, _ := block["source"].(map[string]any)
+			contentParts = append(contentParts, model.OpenAIContentPart{
+				Type:     "image_url",
+				ImageURL: &model.OpenAIImageURL{URL: buildImageURL(source)},
+			})
 		case "tool_result":
 			toolCallID, _ := block["tool_call_id"].(string)
 			content := extractToolResultContent(block["content"])
@@ -182,7 +192,9 @@ func convertUserBlocks(blocks []map[string]any) ([]model.OpenAIMessage, error) {
 		}
 	}
 
-	if len(textParts) > 0 {
+	if hasImage {
+		messages = append([]model.OpenAIMessage{{Role: "user", Content: contentParts}}, messages...)
+	} else if len(textParts) > 0 {
 		content := textParts[0]
 		for _, p := range textParts[1:] {
 			content += "\n" + p
@@ -191,6 +203,17 @@ func convertUserBlocks(blocks []map[string]any) ([]model.OpenAIMessage, error) {
 	}
 
 	return messages, nil
+}
+
+func buildImageURL(source map[string]any) string {
+	sourceType, _ := source["type"].(string)
+	if sourceType == "url" {
+		url, _ := source["url"].(string)
+		return url
+	}
+	mediaType, _ := source["media_type"].(string)
+	data, _ := source["data"].(string)
+	return "data:" + mediaType + ";base64," + data
 }
 
 func extractToolResultContent(content any) string {

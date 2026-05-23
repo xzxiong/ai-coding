@@ -3,6 +3,7 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/xzxiong/ai-coding/internal/storage"
@@ -47,6 +48,18 @@ func (h *Handler) apiUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	page := parseIntParam(r, "page", 1)
+	pageSize := parseIntParam(r, "page_size", 100)
+	if pageSize > 1000 {
+		pageSize = 1000
+	}
+	if pageSize < 1 {
+		pageSize = 1
+	}
+	if page < 1 {
+		page = 1
+	}
+
 	type summary struct {
 		TotalRequests  int                   `json:"total_requests"`
 		TotalInput     int                   `json:"total_input_tokens"`
@@ -55,11 +68,14 @@ func (h *Handler) apiUsage(w http.ResponseWriter, r *http.Request) {
 		AvgDuration    int64                 `json:"avg_duration_ms"`
 		ModelBreakdown map[string]int        `json:"model_breakdown"`
 		Records        []storage.UsageRecord `json:"records"`
+		Page           int                   `json:"page"`
+		PageSize       int                   `json:"page_size"`
+		TotalRecords   int                   `json:"total_records"`
+		TotalPages     int                   `json:"total_pages"`
 	}
 
 	s := summary{
 		ModelBreakdown: make(map[string]int),
-		Records:        records,
 	}
 
 	var totalDuration int64
@@ -74,16 +90,40 @@ func (h *Handler) apiUsage(w http.ResponseWriter, r *http.Request) {
 	if s.TotalRequests > 0 {
 		s.AvgDuration = totalDuration / int64(s.TotalRequests)
 	}
+
+	total := len(records)
+	s.TotalRecords = total
+	s.Page = page
+	s.PageSize = pageSize
+	s.TotalPages = (total + pageSize - 1) / pageSize
+
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if start > total {
+		start = total
+	}
+	if end > total {
+		end = total
+	}
+	s.Records = records[start:end]
 	if s.Records == nil {
 		s.Records = []storage.UsageRecord{}
-	}
-	const maxRecords = 1000
-	if len(s.Records) > maxRecords {
-		s.Records = s.Records[len(s.Records)-maxRecords:]
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(s)
+}
+
+func parseIntParam(r *http.Request, name string, defaultVal int) int {
+	s := r.URL.Query().Get(name)
+	if s == "" {
+		return defaultVal
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return defaultVal
+	}
+	return v
 }
 
 func (h *Handler) page(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +166,10 @@ tr:hover { background: #f9f9f9; }
 .model-item { background: #f3f4f6; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .model-item .count { font-weight: 700; color: #333; }
 .empty { text-align: center; padding: 40px; color: #999; }
+.pagination { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 16px; font-size: 13px; }
+.pagination button { padding: 6px 12px; border: 1px solid #ddd; background: #fff; border-radius: 4px; cursor: pointer; }
+.pagination button:disabled { opacity: 0.4; cursor: default; }
+.pagination .page-info { color: #666; }
 .chart-container { position: relative; }
 .chart { display: flex; align-items: flex-end; gap: 2px; height: 180px; padding: 0 4px; border-bottom: 1px solid #e5e7eb; }
 .chart-bar { flex: 1; min-width: 4px; display: flex; flex-direction: column; justify-content: flex-end; position: relative; cursor: pointer; }
@@ -179,23 +223,30 @@ tr:hover { background: #f9f9f9; }
     <tbody id="records-body"></tbody>
   </table>
   <div class="empty" id="empty-msg">No usage data yet</div>
+  <div class="pagination" id="pagination"></div>
 </div>
 </div>
 
 <script>
 let currentRange = '7d';
+let currentPage = 1;
+const pageSize = 50;
 function fmt(n) { return n.toLocaleString(); }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
 function setRange(r) {
   currentRange = r;
+  currentPage = 1;
   document.querySelectorAll('.toolbar button').forEach(b => b.classList.remove('active'));
   event.target.classList.add('active');
   loadData();
 }
 
+function goToPage(p) { currentPage = p; loadData(); }
+
 function loadData() {
-  const url = '/dashboard/api/usage' + (currentRange ? '?range=' + currentRange : '');
+  let url = '/dashboard/api/usage?page=' + currentPage + '&page_size=' + pageSize;
+  if (currentRange) url += '&range=' + currentRange;
   fetch(url)
     .then(r => r.json())
     .then(data => {
@@ -222,14 +273,23 @@ function loadData() {
       }
       emptyMsg.style.display = 'none';
 
-      const rows = data.records.slice().reverse().slice(0, 200).map(r => {
+      const rows = data.records.map(r => {
         const t = new Date(r.timestamp);
         const time = t.toLocaleString();
         const badge = r.stream ? '<span class="badge badge-stream">stream</span>' : '<span class="badge badge-sync">sync</span>';
         return '<tr><td>' + esc(time) + '</td><td>' + esc(r.model) + '</td><td>' + badge + '</td><td>' + fmt(r.input_tokens) + '</td><td>' + fmt(r.output_tokens) + '</td><td>' + fmt(r.total_tokens) + '</td><td>' + r.duration_ms + 'ms</td><td>' + esc(r.input_preview || '') + '</td></tr>';
       });
       tbody.innerHTML = rows.join('');
+      renderPagination(data.page, data.total_pages, data.total_records);
     });
+}
+function renderPagination(page, totalPages, totalRecords) {
+  const div = document.getElementById('pagination');
+  if (totalPages <= 1) { div.innerHTML = ''; return; }
+  let html = '<button ' + (page <= 1 ? 'disabled' : 'onclick="goToPage(' + (page-1) + ')"') + '>&laquo; Prev</button>';
+  html += '<span class="page-info">Page ' + page + ' / ' + totalPages + ' (' + fmt(totalRecords) + ' records)</span>';
+  html += '<button ' + (page >= totalPages ? 'disabled' : 'onclick="goToPage(' + (page+1) + ')"') + '>Next &raquo;</button>';
+  div.innerHTML = html;
 }
 function renderChart(records) {
   const chart = document.getElementById('chart');

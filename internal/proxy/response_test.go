@@ -114,6 +114,83 @@ func TestBuildStreamMessageStart(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIToAnthropic_ToolCalls(t *testing.T) {
+	resp := &model.OpenAIResponse{
+		ID: "chatcmpl-tool",
+		Choices: []model.OpenAIChoice{{
+			Index: 0,
+			Message: model.OpenAIMessage{
+				Role:    "assistant",
+				Content: "",
+				ToolCalls: []model.OpenAIToolCall{{
+					ID:   "call_abc",
+					Type: "function",
+					Function: model.OpenAIToolCallFunc{
+						Name:      "get_weather",
+						Arguments: `{"city":"NYC"}`,
+					},
+				}},
+			},
+			FinishReason: "tool_calls",
+		}},
+		Usage: model.OpenAIUsage{PromptTokens: 20, CompletionTokens: 10},
+	}
+
+	result := ConvertOpenAIToAnthropic(resp, "claude-sonnet-4-6")
+
+	if result.StopReason != "tool_use" {
+		t.Errorf("expected stop_reason tool_use, got %s", result.StopReason)
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(result.Content))
+	}
+	block := result.Content[0]
+	if block.Type != "tool_use" {
+		t.Errorf("expected type tool_use, got %s", block.Type)
+	}
+	if block.ID != "call_abc" {
+		t.Errorf("expected id call_abc, got %s", block.ID)
+	}
+	if block.Name != "get_weather" {
+		t.Errorf("expected name get_weather, got %s", block.Name)
+	}
+	if string(block.Input) != `{"city":"NYC"}` {
+		t.Errorf("expected input, got %s", string(block.Input))
+	}
+}
+
+func TestConvertOpenAIToAnthropic_TextAndToolCalls(t *testing.T) {
+	resp := &model.OpenAIResponse{
+		ID: "chatcmpl-mixed",
+		Choices: []model.OpenAIChoice{{
+			Index: 0,
+			Message: model.OpenAIMessage{
+				Role:    "assistant",
+				Content: "Let me check.",
+				ToolCalls: []model.OpenAIToolCall{{
+					ID:       "call_xyz",
+					Type:     "function",
+					Function: model.OpenAIToolCallFunc{Name: "lookup", Arguments: `{}`},
+				}},
+			},
+			FinishReason: "tool_calls",
+		}},
+		Usage: model.OpenAIUsage{},
+	}
+
+	result := ConvertOpenAIToAnthropic(resp, "test")
+
+	if len(result.Content) != 2 {
+		t.Fatalf("expected 2 content blocks, got %d", len(result.Content))
+	}
+	if result.Content[0].Type != "text" {
+		t.Errorf("expected first block text, got %s", result.Content[0].Type)
+	}
+	if result.Content[1].Type != "tool_use" {
+		t.Errorf("expected second block tool_use, got %s", result.Content[1].Type)
+	}
+}
+
 func TestMapFinishReason(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -121,6 +198,7 @@ func TestMapFinishReason(t *testing.T) {
 	}{
 		{"stop", "end_turn"},
 		{"length", "max_tokens"},
+		{"tool_calls", "tool_use"},
 		{"content_filter", "end_turn"},
 		{"unknown", "end_turn"},
 		{"", "end_turn"},

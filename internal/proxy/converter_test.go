@@ -201,6 +201,214 @@ func TestConvertAnthropicToOpenAI_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConvertAnthropicToOpenAI_WithTools(t *testing.T) {
+	raw := `{
+		"model": "claude-sonnet-4-6",
+		"max_tokens": 1024,
+		"tools": [{"name": "get_weather", "description": "Get weather", "input_schema": {"type":"object","properties":{"city":{"type":"string"}}}}],
+		"tool_choice": {"type": "auto"},
+		"messages": [{"role": "user", "content": "What is the weather in NYC?"}]
+	}`
+
+	var req model.AnthropicRequest
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	result, err := ConvertAnthropicToOpenAI(&req, "")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+
+	if len(result.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(result.Tools))
+	}
+	if result.Tools[0].Type != "function" {
+		t.Errorf("expected type function, got %s", result.Tools[0].Type)
+	}
+	if result.Tools[0].Function.Name != "get_weather" {
+		t.Errorf("expected name get_weather, got %s", result.Tools[0].Function.Name)
+	}
+	if result.Tools[0].Function.Description != "Get weather" {
+		t.Errorf("expected description, got %s", result.Tools[0].Function.Description)
+	}
+	if result.ToolChoice != "auto" {
+		t.Errorf("expected tool_choice auto, got %v", result.ToolChoice)
+	}
+}
+
+func TestConvertToolChoice(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    any
+		expected any
+	}{
+		{"auto", map[string]any{"type": "auto"}, "auto"},
+		{"any", map[string]any{"type": "any"}, "required"},
+		{"specific_tool", map[string]any{"type": "tool", "name": "get_weather"},
+			map[string]any{"type": "function", "function": map[string]string{"name": "get_weather"}}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := convertToolChoice(tc.input)
+			gotJSON, _ := json.Marshal(got)
+			expectedJSON, _ := json.Marshal(tc.expected)
+			if string(gotJSON) != string(expectedJSON) {
+				t.Errorf("got %s, want %s", gotJSON, expectedJSON)
+			}
+		})
+	}
+}
+
+func TestConvertAssistantBlocks_ToolUse(t *testing.T) {
+	raw := `{
+		"model": "claude-sonnet-4-6", "max_tokens": 1024,
+		"messages": [{
+			"role": "assistant",
+			"content": [
+				{"type": "text", "text": "Let me check."},
+				{"type": "tool_use", "id": "toolu_123", "name": "get_weather", "input": {"city": "NYC"}}
+			]
+		}]
+	}`
+
+	var req model.AnthropicRequest
+	json.Unmarshal([]byte(raw), &req)
+
+	result, err := ConvertAnthropicToOpenAI(&req, "")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result.Messages))
+	}
+	msg := result.Messages[0]
+	if msg.Role != "assistant" {
+		t.Errorf("expected assistant, got %s", msg.Role)
+	}
+	if msg.Content != "Let me check." {
+		t.Errorf("expected text content, got %s", msg.Content)
+	}
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(msg.ToolCalls))
+	}
+	if msg.ToolCalls[0].ID != "toolu_123" {
+		t.Errorf("expected id toolu_123, got %s", msg.ToolCalls[0].ID)
+	}
+	if msg.ToolCalls[0].Function.Name != "get_weather" {
+		t.Errorf("expected name get_weather, got %s", msg.ToolCalls[0].Function.Name)
+	}
+	if msg.ToolCalls[0].Function.Arguments != `{"city":"NYC"}` {
+		t.Errorf("expected arguments, got %s", msg.ToolCalls[0].Function.Arguments)
+	}
+}
+
+func TestConvertUserBlocks_ToolResult(t *testing.T) {
+	raw := `{
+		"model": "claude-sonnet-4-6", "max_tokens": 1024,
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "tool_result", "tool_call_id": "toolu_123", "content": "72F and sunny"}
+			]
+		}]
+	}`
+
+	var req model.AnthropicRequest
+	json.Unmarshal([]byte(raw), &req)
+
+	result, err := ConvertAnthropicToOpenAI(&req, "")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result.Messages))
+	}
+	msg := result.Messages[0]
+	if msg.Role != "tool" {
+		t.Errorf("expected tool role, got %s", msg.Role)
+	}
+	if msg.ToolCallID != "toolu_123" {
+		t.Errorf("expected tool_call_id toolu_123, got %s", msg.ToolCallID)
+	}
+	if msg.Content != "72F and sunny" {
+		t.Errorf("expected content, got %s", msg.Content)
+	}
+}
+
+func TestConvertUserBlocks_ImageBase64(t *testing.T) {
+	raw := `{
+		"model": "claude-sonnet-4-6", "max_tokens": 1024,
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBOR"}},
+				{"type": "text", "text": "What is this?"}
+			]
+		}]
+	}`
+
+	var req model.AnthropicRequest
+	json.Unmarshal([]byte(raw), &req)
+
+	result, err := ConvertAnthropicToOpenAI(&req, "")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result.Messages))
+	}
+	parts, ok := result.Messages[0].Content.([]model.OpenAIContentPart)
+	if !ok {
+		t.Fatalf("expected content parts array, got %T", result.Messages[0].Content)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(parts))
+	}
+	if parts[0].Type != "image_url" {
+		t.Errorf("expected image_url, got %s", parts[0].Type)
+	}
+	if parts[0].ImageURL.URL != "data:image/png;base64,iVBOR" {
+		t.Errorf("unexpected url: %s", parts[0].ImageURL.URL)
+	}
+	if parts[1].Type != "text" || parts[1].Text != "What is this?" {
+		t.Errorf("unexpected text part: %+v", parts[1])
+	}
+}
+
+func TestConvertUserBlocks_ImageURL(t *testing.T) {
+	raw := `{
+		"model": "claude-sonnet-4-6", "max_tokens": 1024,
+		"messages": [{
+			"role": "user",
+			"content": [
+				{"type": "image", "source": {"type": "url", "url": "https://example.com/img.png"}},
+				{"type": "text", "text": "Describe"}
+			]
+		}]
+	}`
+
+	var req model.AnthropicRequest
+	json.Unmarshal([]byte(raw), &req)
+
+	result, err := ConvertAnthropicToOpenAI(&req, "")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+
+	parts, ok := result.Messages[0].Content.([]model.OpenAIContentPart)
+	if !ok {
+		t.Fatalf("expected content parts array, got %T", result.Messages[0].Content)
+	}
+	if parts[0].ImageURL.URL != "https://example.com/img.png" {
+		t.Errorf("unexpected url: %s", parts[0].ImageURL.URL)
+	}
+}
+
 func TestMapModel(t *testing.T) {
 	t.Run("passthrough", func(t *testing.T) {
 		tests := []struct {

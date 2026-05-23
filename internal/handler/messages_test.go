@@ -227,6 +227,131 @@ func TestMessagesHandler_WithSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestMessagesHandler_StreamToolCalls(t *testing.T) {
+	chunks := []string{
+		`{"id":"chatcmpl-tc","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-tc","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Let me check."},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-tc","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-tc","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":"}}]},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-tc","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"NYC\"}"}}]},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-tc","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":15,"total_tokens":35}}`,
+	}
+
+	server := setupMockOpenAIStream(t, chunks)
+	defer server.Close()
+
+	cfg := &config.Config{
+		OpenAIBaseURL: server.URL,
+		OpenAIAPIKey:  "test-key",
+		DefaultModel:  "gpt-4o",
+	}
+	handler := NewMessagesHandler(cfg)
+
+	body := `{"model":"claude-sonnet-4-6","max_tokens":1024,"stream":true,"tools":[{"name":"get_weather","description":"Get weather","input_schema":{"type":"object","properties":{"city":{"type":"string"}}}}],"messages":[{"role":"user","content":"Weather in NYC?"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	respBody := rec.Body.String()
+
+	if !strings.Contains(respBody, "event: message_start") {
+		t.Error("missing message_start event")
+	}
+	if !strings.Contains(respBody, "Let me check.") {
+		t.Error("missing text content in stream")
+	}
+	if !strings.Contains(respBody, "get_weather") {
+		t.Error("missing tool name in stream")
+	}
+	if !strings.Contains(respBody, "tool_use") {
+		t.Error("missing tool_use content block type")
+	}
+	if !strings.Contains(respBody, "event: message_stop") {
+		t.Error("missing message_stop event")
+	}
+}
+
+func TestMessagesHandler_NonStreamToolCalls(t *testing.T) {
+	mockResp := model.OpenAIResponse{
+		ID:      "chatcmpl-tool",
+		Object:  "chat.completion",
+		Created: 1700000000,
+		Model:   "gpt-4o",
+		Choices: []model.OpenAIChoice{
+			{
+				Index: 0,
+				Message: model.OpenAIMessage{
+					Role:    "assistant",
+					Content: "Let me look that up.",
+					ToolCalls: []model.OpenAIToolCall{
+						{
+							ID:   "call_xyz",
+							Type: "function",
+							Function: model.OpenAIToolCallFunc{
+								Name:      "get_weather",
+								Arguments: `{"city":"NYC"}`,
+							},
+						},
+					},
+				},
+				FinishReason: "tool_calls",
+			},
+		},
+		Usage: model.OpenAIUsage{PromptTokens: 12, CompletionTokens: 8, TotalTokens: 20},
+	}
+
+	server := setupMockOpenAI(t, mockResp)
+	defer server.Close()
+
+	cfg := &config.Config{
+		OpenAIBaseURL: server.URL,
+		OpenAIAPIKey:  "test-key",
+		DefaultModel:  "gpt-4o",
+	}
+	handler := NewMessagesHandler(cfg)
+
+	body := `{"model":"claude-sonnet-4-6","max_tokens":1024,"messages":[{"role":"user","content":"Weather?"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp model.AnthropicResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if resp.StopReason != "tool_use" {
+		t.Errorf("expected stop_reason tool_use, got %s", resp.StopReason)
+	}
+	if len(resp.Content) != 2 {
+		t.Fatalf("expected 2 content blocks, got %d", len(resp.Content))
+	}
+	if resp.Content[0].Type != "text" || resp.Content[0].Text != "Let me look that up." {
+		t.Errorf("unexpected text block: %+v", resp.Content[0])
+	}
+	if resp.Content[1].Type != "tool_use" {
+		t.Errorf("expected tool_use block, got %s", resp.Content[1].Type)
+	}
+	if resp.Content[1].ID != "call_xyz" {
+		t.Errorf("expected tool id call_xyz, got %s", resp.Content[1].ID)
+	}
+	if resp.Content[1].Name != "get_weather" {
+		t.Errorf("expected tool name get_weather, got %s", resp.Content[1].Name)
+	}
+}
+
 func TestMessagesHandler_WithStore_NonStream(t *testing.T) {
 	mockResp := model.OpenAIResponse{
 		ID:      "chatcmpl-store",
