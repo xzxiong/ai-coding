@@ -27,7 +27,10 @@ func TestStore_RecordAndRetrieve(t *testing.T) {
 		t.Fatalf("record: %v", err)
 	}
 
-	records := s.Records()
+	records, err := s.Records()
+	if err != nil {
+		t.Fatalf("records: %v", err)
+	}
 	if len(records) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(records))
 	}
@@ -69,7 +72,10 @@ func TestStore_Persistence(t *testing.T) {
 	}
 	defer s2.Close()
 
-	records := s2.Records()
+	records, err := s2.Records()
+	if err != nil {
+		t.Fatalf("records: %v", err)
+	}
 	if len(records) != 2 {
 		t.Fatalf("expected 2 records after reopen, got %d", len(records))
 	}
@@ -91,7 +97,10 @@ func TestStore_Since(t *testing.T) {
 	s.Record(UsageRecord{Timestamp: now.Add(-30 * time.Minute), Model: "recent", TotalTokens: 20})
 	s.Record(UsageRecord{Timestamp: now, Model: "now", TotalTokens: 30})
 
-	records := s.Since(now.Add(-1 * time.Hour))
+	records, err := s.Since(now.Add(-1 * time.Hour))
+	if err != nil {
+		t.Fatalf("since: %v", err)
+	}
 	if len(records) != 2 {
 		t.Fatalf("expected 2 records since 1h ago, got %d", len(records))
 	}
@@ -110,7 +119,10 @@ func TestStore_Between(t *testing.T) {
 	s.Record(UsageRecord{Timestamp: now.Add(-90 * time.Minute), Model: "in-range"})
 	s.Record(UsageRecord{Timestamp: now, Model: "too-new"})
 
-	records := s.Between(now.Add(-2*time.Hour), now.Add(-1*time.Hour))
+	records, err := s.Between(now.Add(-2*time.Hour), now.Add(-1*time.Hour))
+	if err != nil {
+		t.Fatalf("between: %v", err)
+	}
 	if len(records) != 1 {
 		t.Fatalf("expected 1 record in range, got %d", len(records))
 	}
@@ -144,7 +156,11 @@ func TestStore_EmptyDB(t *testing.T) {
 	}
 	defer s.Close()
 
-	if len(s.Records()) != 0 {
+	records, err := s.Records()
+	if err != nil {
+		t.Fatalf("records: %v", err)
+	}
+	if len(records) != 0 {
 		t.Errorf("expected 0 records")
 	}
 }

@@ -8,4 +8,10 @@ services:
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4o}
+      - DATA_FILE=/data/usage.db
+    volumes:
+      - usage-data:/data
     restart: unless-stopped
+
+volumes:
+  usage-data:

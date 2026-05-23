@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"log"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -60,65 +61,70 @@ func (s *Store) Record(r UsageRecord) error {
 	})
 }
 
-func (s *Store) Records() []UsageRecord {
+func (s *Store) Records() ([]UsageRecord, error) {
 	var records []UsageRecord
-	s.db.View(func(tx *bolt.Tx) error {
+	err := s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketName)
 		c := b.Cursor()
 		for k, v := c.First(); k != nil; k, v = c.Next() {
 			var r UsageRecord
-			if json.Unmarshal(v, &r) == nil {
-				records = append(records, r)
+			if err := json.Unmarshal(v, &r); err != nil {
+				log.Printf("WARN: skip corrupted record: %v", err)
+				continue
 			}
+			records = append(records, r)
 		}
 		return nil
 	})
-	return records
+	return records, err
 }
 
-func (s *Store) Since(start time.Time) []UsageRecord {
+func (s *Store) Since(start time.Time) ([]UsageRecord, error) {
 	var records []UsageRecord
 	min := make([]byte, 16)
 	binary.BigEndian.PutUint64(min[:8], uint64(start.UnixNano()))
 
-	s.db.View(func(tx *bolt.Tx) error {
+	err := s.db.View(func(tx *bolt.Tx) error {
 		c := tx.Bucket(bucketName).Cursor()
 		for k, v := c.Seek(min); k != nil; k, v = c.Next() {
 			var r UsageRecord
-			if json.Unmarshal(v, &r) == nil {
-				records = append(records, r)
+			if err := json.Unmarshal(v, &r); err != nil {
+				log.Printf("WARN: skip corrupted record: %v", err)
+				continue
 			}
+			records = append(records, r)
 		}
 		return nil
 	})
-	return records
+	return records, err
 }
 
-func (s *Store) Between(start, end time.Time) []UsageRecord {
+func (s *Store) Between(start, end time.Time) ([]UsageRecord, error) {
 	var records []UsageRecord
 	min := make([]byte, 16)
 	binary.BigEndian.PutUint64(min[:8], uint64(start.UnixNano()))
 	max := make([]byte, 16)
 	binary.BigEndian.PutUint64(max[:8], uint64(end.UnixNano()))
-	// fill max seq to include all records at that nanosecond
 	for i := 8; i < 16; i++ {
 		max[i] = 0xff
 	}
 
-	s.db.View(func(tx *bolt.Tx) error {
+	err := s.db.View(func(tx *bolt.Tx) error {
 		c := tx.Bucket(bucketName).Cursor()
 		for k, v := c.Seek(min); k != nil; k, v = c.Next() {
 			if bytes.Compare(k, max) > 0 {
 				break
 			}
 			var r UsageRecord
-			if json.Unmarshal(v, &r) == nil {
-				records = append(records, r)
+			if err := json.Unmarshal(v, &r); err != nil {
+				log.Printf("WARN: skip corrupted record: %v", err)
+				continue
 			}
+			records = append(records, r)
 		}
 		return nil
 	})
-	return records
+	return records, err
 }
 
 func (s *Store) Count() int {

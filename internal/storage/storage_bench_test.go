@@ -62,7 +62,7 @@ func BenchmarkStore_Since_10000(b *testing.B) {
 	since := now.Add(-1 * time.Hour)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		s.Since(since)
+		s.Since(since) //nolint:errcheck
 	}
 }
 
@@ -84,6 +84,6 @@ func benchReadN(b *testing.B, n int) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		s.Records()
+		s.Records() //nolint:errcheck
 	}
 }

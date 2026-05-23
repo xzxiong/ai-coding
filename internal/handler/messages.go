@@ -131,6 +131,7 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 		var chunk model.OpenAIStreamResponse
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			log.Printf("WARN: malformed stream chunk: %v", err)
 			continue
 		}
 
@@ -154,6 +155,10 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 				break
 			}
 		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("ERROR: stream read error: %v", err)
 	}
 
 	duration := time.Since(start).Milliseconds()

@@ -27,19 +27,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) apiUsage(w http.ResponseWriter, r *http.Request) {
 	rangeParam := r.URL.Query().Get("range")
 	var records []storage.UsageRecord
+	var err error
 
 	now := time.Now()
 	switch rangeParam {
 	case "1h":
-		records = h.store.Since(now.Add(-1 * time.Hour))
+		records, err = h.store.Since(now.Add(-1 * time.Hour))
 	case "24h":
-		records = h.store.Since(now.Add(-24 * time.Hour))
+		records, err = h.store.Since(now.Add(-24 * time.Hour))
 	case "7d":
-		records = h.store.Since(now.Add(-7 * 24 * time.Hour))
+		records, err = h.store.Since(now.Add(-7 * 24 * time.Hour))
 	case "30d":
-		records = h.store.Since(now.Add(-30 * 24 * time.Hour))
+		records, err = h.store.Since(now.Add(-30 * 24 * time.Hour))
 	default:
-		records = h.store.Records()
+		records, err = h.store.Records()
+	}
+	if err != nil {
+		http.Error(w, `{"error":"internal storage error"}`, http.StatusInternalServerError)
+		return
 	}
 
 	type summary struct {
@@ -71,6 +76,10 @@ func (h *Handler) apiUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.Records == nil {
 		s.Records = []storage.UsageRecord{}
+	}
+	const maxRecords = 1000
+	if len(s.Records) > maxRecords {
+		s.Records = s.Records[len(s.Records)-maxRecords:]
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -155,6 +164,7 @@ tr:hover { background: #f9f9f9; }
 <script>
 let currentRange = '7d';
 function fmt(n) { return n.toLocaleString(); }
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
 function setRange(r) {
   currentRange = r;
@@ -177,7 +187,7 @@ function loadData() {
       const modelDiv = document.getElementById('model-breakdown');
       modelDiv.innerHTML = '';
       for (const [model, count] of Object.entries(data.model_breakdown || {})) {
-        modelDiv.innerHTML += '<div class="model-item"><span class="count">' + count + '</span> ' + model + '</div>';
+        modelDiv.innerHTML += '<div class="model-item"><span class="count">' + count + '</span> ' + esc(model) + '</div>';
       }
 
       const tbody = document.getElementById('records-body');
@@ -193,7 +203,7 @@ function loadData() {
         const t = new Date(r.timestamp);
         const time = t.toLocaleString();
         const badge = r.stream ? '<span class="badge badge-stream">stream</span>' : '<span class="badge badge-sync">sync</span>';
-        return '<tr><td>' + time + '</td><td>' + r.model + '</td><td>' + badge + '</td><td>' + fmt(r.input_tokens) + '</td><td>' + fmt(r.output_tokens) + '</td><td>' + fmt(r.total_tokens) + '</td><td>' + r.duration_ms + 'ms</td></tr>';
+        return '<tr><td>' + esc(time) + '</td><td>' + esc(r.model) + '</td><td>' + badge + '</td><td>' + fmt(r.input_tokens) + '</td><td>' + fmt(r.output_tokens) + '</td><td>' + fmt(r.total_tokens) + '</td><td>' + r.duration_ms + 'ms</td></tr>';
       });
       tbody.innerHTML = rows.join('');
     });
