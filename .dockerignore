@@ -1,0 +1,13 @@
+bin/
+.env
+.git/
+.claude/
+.mcp.json
+usage.db
+usage_data.json
+data/
+docs/
+tests/
+README.md
+Makefile
+docker-compose.yaml
