@@ -1,2 +1,4 @@
 bin/
 .env
+usage.db
+usage_data.json

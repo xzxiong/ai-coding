@@ -8,21 +8,36 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/xzxiong/ai-coding/internal/config"
 	"github.com/xzxiong/ai-coding/internal/model"
 	"github.com/xzxiong/ai-coding/internal/proxy"
+	"github.com/xzxiong/ai-coding/internal/storage"
 )
 
 type MessagesHandler struct {
 	client *proxy.Client
 	cfg    *config.Config
+	store  *storage.Store
 }
 
-func NewMessagesHandler(cfg *config.Config) *MessagesHandler {
-	return &MessagesHandler{
+func NewMessagesHandler(cfg *config.Config, opts ...MessagesOption) *MessagesHandler {
+	h := &MessagesHandler{
 		client: proxy.NewClient(cfg),
 		cfg:    cfg,
+	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+type MessagesOption func(*MessagesHandler)
+
+func WithStore(s *storage.Store) MessagesOption {
+	return func(h *MessagesHandler) {
+		h.store = s
 	}
 }
 
@@ -52,12 +67,17 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *MessagesHandler) handleNonStream(w http.ResponseWriter, r *http.Request, openaiReq *model.OpenAIRequest, reqModel string) {
+	start := time.Now()
+
 	resp, err := h.client.ChatCompletion(r.Context(), openaiReq)
 	if err != nil {
 		log.Printf("ERROR: proxy request failed: %v", err)
 		writeError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
+
+	duration := time.Since(start).Milliseconds()
+	h.recordUsage(reqModel, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, false, duration)
 
 	anthropicResp := proxy.ConvertOpenAIToAnthropic(resp, reqModel)
 
@@ -66,6 +86,8 @@ func (h *MessagesHandler) handleNonStream(w http.ResponseWriter, r *http.Request
 }
 
 func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, openaiReq *model.OpenAIRequest, reqModel string) {
+	start := time.Now()
+
 	resp, err := h.client.ChatCompletionStream(r.Context(), openaiReq)
 	if err != nil {
 		log.Printf("ERROR: proxy stream request failed: %v", err)
@@ -95,6 +117,7 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 	writeSSE(w, "content_block_start", contentBlockStart)
 	flusher.Flush()
 
+	var streamUsage *model.OpenAIUsage
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -109,6 +132,10 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 		var chunk model.OpenAIStreamResponse
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
+		}
+
+		if chunk.Usage != nil {
+			streamUsage = chunk.Usage
 		}
 
 		if len(chunk.Choices) > 0 {
@@ -129,6 +156,13 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 		}
 	}
 
+	duration := time.Since(start).Milliseconds()
+	if streamUsage != nil {
+		h.recordUsage(reqModel, streamUsage.PromptTokens, streamUsage.CompletionTokens, true, duration)
+	} else {
+		h.recordUsage(reqModel, 0, 0, true, duration)
+	}
+
 	contentBlockStop := model.AnthropicContentBlockStop{Type: "content_block_stop", Index: 0}
 	writeSSE(w, "content_block_stop", contentBlockStop)
 
@@ -141,6 +175,23 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 	writeSSERaw(w, "message_stop", "{}")
 	flusher.Flush()
+}
+
+func (h *MessagesHandler) recordUsage(reqModel string, input, output int, stream bool, duration int64) {
+	if h.store == nil {
+		return
+	}
+	if err := h.store.Record(storage.UsageRecord{
+		Timestamp:    time.Now(),
+		Model:        reqModel,
+		InputTokens:  input,
+		OutputTokens: output,
+		TotalTokens:  input + output,
+		Stream:       stream,
+		Duration:     duration,
+	}); err != nil {
+		log.Printf("ERROR: record usage: %v", err)
+	}
 }
 
 func writeSSE(w io.Writer, event string, data any) {

@@ -9,6 +9,7 @@ type Config struct {
 	OpenAIBaseURL string
 	OpenAIAPIKey  string
 	DefaultModel  string
+	DataFile      string
 }
 
 func Load() *Config {
@@ -17,6 +18,7 @@ func Load() *Config {
 		OpenAIBaseURL: getEnv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
 		OpenAIAPIKey:  getEnv("OPENAI_API_KEY", ""),
 		DefaultModel:  getEnv("DEFAULT_MODEL", "gpt-4o"),
+		DataFile:      getEnv("DATA_FILE", "usage.db"),
 	}
 }
 
