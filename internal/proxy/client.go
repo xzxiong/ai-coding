@@ -62,6 +62,7 @@ func (c *Client) ChatCompletion(ctx context.Context, req *model.OpenAIRequest) (
 
 func (c *Client) ChatCompletionStream(ctx context.Context, req *model.OpenAIRequest) (*http.Response, error) {
 	req.Stream = true
+	req.StreamOptions = &model.OpenAIStreamOpts{IncludeUsage: true}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)

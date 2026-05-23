@@ -1,13 +1,18 @@
 package model
 
 type OpenAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []OpenAIMessage `json:"messages"`
-	MaxTokens   *int            `json:"max_tokens,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	Stop        []string        `json:"stop,omitempty"`
+	Model         string             `json:"model"`
+	Messages      []OpenAIMessage    `json:"messages"`
+	MaxTokens     *int               `json:"max_tokens,omitempty"`
+	Stream        bool               `json:"stream,omitempty"`
+	StreamOptions *OpenAIStreamOpts  `json:"stream_options,omitempty"`
+	Temperature   *float64           `json:"temperature,omitempty"`
+	TopP          *float64           `json:"top_p,omitempty"`
+	Stop          []string           `json:"stop,omitempty"`
+}
+
+type OpenAIStreamOpts struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type OpenAIMessage struct {
