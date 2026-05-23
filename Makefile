@@ -1,4 +1,4 @@
-.PHONY: build run clean test test-real docker-build docker-up docker-down e2e
+.PHONY: build run clean test test-real docker-build docker-up docker-down e2e help
 
 build:
 	go build -o bin/server ./cmd/server
@@ -29,3 +29,18 @@ docker-down:
 e2e:
 	pip install -q -r tests/e2e/requirements.txt
 	PROXY_URL=http://localhost:8080 pytest tests/e2e/test_anthropic_sdk.py -v
+
+help:
+	@echo "Usage: make <target>"
+	@echo ""
+	@echo "Targets:"
+	@echo "  build         Build server binary to bin/server"
+	@echo "  run           Run server locally"
+	@echo "  test          Run unit tests"
+	@echo "  test-real     Run real API e2e tests (requires TEST_BASE_URL, TEST_TOKEN)"
+	@echo "  e2e           Run Python Anthropic SDK e2e tests"
+	@echo "  docker-build  Build Docker image"
+	@echo "  docker-up     Start containers"
+	@echo "  docker-down   Stop containers"
+	@echo "  clean         Remove build artifacts"
+	@echo "  help          Show this help"
