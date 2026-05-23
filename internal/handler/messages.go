@@ -224,6 +224,13 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 		inTok, outTok = streamUsage.PromptTokens, streamUsage.CompletionTokens
 	}
 
+	if len(toolCalls) > 0 {
+		for i, tc := range toolCalls {
+			log.Printf("REQ model=%s stream=true tool[%d]=%s args=%s",
+				reqModel, i, tc.Name, truncate(tc.Arguments, 80))
+		}
+	}
+
 	log.Printf("REQ model=%s stream=true input_tokens=%d output_tokens=%d duration=%dms in=\"%s\"",
 		reqModel, inTok, outTok, duration, inputPreview)
 
