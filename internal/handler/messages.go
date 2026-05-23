@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +16,10 @@ import (
 	"github.com/xzxiong/ai-coding/internal/proxy"
 	"github.com/xzxiong/ai-coding/internal/storage"
 )
+
+func genReqID() string {
+	return fmt.Sprintf("%04x", rand.Intn(0xFFFF))
+}
 
 type MessagesHandler struct {
 	client *proxy.Client
@@ -69,19 +74,20 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *MessagesHandler) handleNonStream(w http.ResponseWriter, r *http.Request, openaiReq *model.OpenAIRequest, reqModel string, inputPreview string) {
+	rid := genReqID()
 	start := time.Now()
 
 	resp, err := h.client.ChatCompletion(r.Context(), openaiReq)
 	if err != nil {
-		log.Printf("ERROR: proxy request failed: %v", err)
+		log.Printf("[%s] ERROR: proxy request failed: %v", rid, err)
 		writeError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
 
 	duration := time.Since(start).Milliseconds()
 
-	log.Printf("REQ model=%s stream=false input_tokens=%d output_tokens=%d duration=%dms in=\"%s\"",
-		reqModel, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, duration, inputPreview)
+	log.Printf("[%s] REQ model=%s stream=false input_tokens=%d output_tokens=%d duration=%dms in=\"%s\"",
+		rid, reqModel, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, duration, inputPreview)
 
 	h.recordUsage(reqModel, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, false, duration, inputPreview)
 
@@ -92,11 +98,12 @@ func (h *MessagesHandler) handleNonStream(w http.ResponseWriter, r *http.Request
 }
 
 func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, openaiReq *model.OpenAIRequest, reqModel string, inputPreview string) {
+	rid := genReqID()
 	start := time.Now()
 
 	resp, err := h.client.ChatCompletionStream(r.Context(), openaiReq)
 	if err != nil {
-		log.Printf("ERROR: proxy stream request failed: %v", err)
+		log.Printf("[%s] ERROR: proxy stream request failed: %v", rid, err)
 		writeError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
@@ -190,7 +197,7 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 	}
 
 	if err := scanner.Err(); err != nil {
-		log.Printf("ERROR: stream read error: %v", err)
+		log.Printf("[%s] ERROR: stream read error: %v", rid, err)
 	}
 
 	if textBlockStarted {
@@ -226,13 +233,13 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 	if len(toolCalls) > 0 {
 		for i, tc := range toolCalls {
-			log.Printf("REQ model=%s stream=true tool[%d]=%s args=%s",
-				reqModel, i, tc.Name, truncate(tc.Arguments, 80))
+			log.Printf("[%s] REQ model=%s stream=true tool[%d]=%s args=%s",
+				rid, reqModel, i, tc.Name, truncate(tc.Arguments, 80))
 		}
 	}
 
-	log.Printf("REQ model=%s stream=true input_tokens=%d output_tokens=%d duration=%dms in=\"%s\"",
-		reqModel, inTok, outTok, duration, inputPreview)
+	log.Printf("[%s] REQ model=%s stream=true input_tokens=%d output_tokens=%d duration=%dms in=\"%s\"",
+		rid, reqModel, inTok, outTok, duration, inputPreview)
 
 	h.recordUsage(reqModel, inTok, outTok, true, duration, inputPreview)
 
