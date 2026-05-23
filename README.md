@@ -101,12 +101,54 @@ Response:
 | `OPENAI_API_KEY` | (empty) | API key for the backend |
 | `DEFAULT_MODEL` | `gpt-4o` | Fallback model when request model is empty |
 | `DATA_FILE` | `usage.db` | Path to bbolt database file for token tracking |
+| `DEBUG` | (empty) | Set to `1` or `true` to enable full request/response logging |
+
+## Claude Code Integration
+
+Use this proxy as the backend for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), routing all requests to your preferred OpenAI-compatible models.
+
+### Setup
+
+Add the following to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) or export before launching Claude Code:
+
+```bash
+# Point Claude Code to the proxy
+export ANTHROPIC_BASE_URL="http://localhost:9465"
+export ANTHROPIC_AUTH_TOKEN="dummy"
+
+# Model mapping
+export ANTHROPIC_MODEL="deepseek-v4-flash"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="<your-large-model>"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="<your-mid-model>"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="<your-fast-model>"
+
+# Subagent and effort settings
+export CLAUDE_CODE_SUBAGENT_MODEL="<your-fast-model>"
+export CLAUDE_CODE_EFFORT_LEVEL="max"
+```
+
+> **Note:** `ANTHROPIC_AUTH_TOKEN` can be any non-empty value — the proxy does not validate client-side tokens. The real backend API key is configured server-side via `OPENAI_API_KEY`.
+
+### Model mapping explained
+
+| Env Variable | Purpose | Example |
+|---|---|---|
+| `ANTHROPIC_MODEL` | Default model for main conversation | `deepseek-v4-flash` |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL` | Used when Claude Code requests Opus-tier | `kimi-k2.5` |
+| `ANTHROPIC_DEFAULT_SONNET_MODEL` | Used when Claude Code requests Sonnet-tier | `deepseek-v4-pro` |
+| `ANTHROPIC_DEFAULT_HAIKU_MODEL` | Used when Claude Code requests Haiku-tier | `deepseek-v4-flash` |
+| `CLAUDE_CODE_SUBAGENT_MODEL` | Model for spawned sub-agents | `deepseek-v4-flash` |
+| `CLAUDE_CODE_EFFORT_LEVEL` | Thinking effort: `low`, `medium`, `high`, `max` | `max` |
+
+### Known limitations
+
+- Smaller/faster models (e.g. `deepseek-v4-flash`) may fail to make tool calls when context is large (50K+ tokens) with many tools (48+). Use a larger model (e.g. `deepseek-v4-pro`) for complex tool-heavy sessions. See [#1](https://github.com/xzxiong/ai-coding/issues/1).
 
 ## Client Configuration
 
 Point any Anthropic-compatible client to the proxy:
 
-### Claude Code CLI
+### Claude Code CLI (minimal)
 
 ```bash
 export ANTHROPIC_BASE_URL="http://localhost:9465"
