@@ -1,4 +1,7 @@
-.PHONY: build run clean test test-real docker-build docker-up docker-down e2e help
+IMAGE_NAME ?= ai-coding
+IMAGE_TAG  ?= latest
+
+.PHONY: build run clean test test-real image docker-build docker-up docker-down e2e help
 
 build:
 	go build -o bin/server ./cmd/server
@@ -17,8 +20,10 @@ test-real:
 	@test -n "$$TEST_TOKEN" || (echo "ERROR: TEST_TOKEN is not set"; exit 1)
 	go test -v -count=1 -run TestReal ./tests/e2e/
 
-docker-build:
-	docker compose build
+image:
+	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
+
+docker-build: image
 
 docker-up:
 	docker compose up -d
@@ -39,7 +44,8 @@ help:
 	@echo "  test          Run unit tests"
 	@echo "  test-real     Run real API e2e tests (requires TEST_BASE_URL, TEST_TOKEN)"
 	@echo "  e2e           Run Python Anthropic SDK e2e tests"
-	@echo "  docker-build  Build Docker image"
+	@echo "  image         Build Docker image (IMAGE_NAME, IMAGE_TAG)"
+	@echo "  docker-build  Build Docker image via compose"
 	@echo "  docker-up     Start containers"
 	@echo "  docker-down   Stop containers"
 	@echo "  clean         Remove build artifacts"

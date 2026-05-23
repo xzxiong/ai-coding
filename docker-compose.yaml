@@ -1,6 +1,6 @@
 services:
   server:
-    build: .
+    image: ${IMAGE_NAME:-ai-coding}:${IMAGE_TAG:-latest}
     ports:
       - "8080:8080"
     environment:
