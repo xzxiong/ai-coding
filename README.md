@@ -102,6 +102,46 @@ Response:
 | `DEFAULT_MODEL` | `gpt-4o` | Fallback model when request model is empty |
 | `DATA_FILE` | `usage.db` | Path to bbolt database file for token tracking |
 
+## Client Configuration
+
+Point any Anthropic-compatible client to the proxy:
+
+### Claude Code CLI
+
+```bash
+export ANTHROPIC_BASE_URL="http://localhost:9465"
+export ANTHROPIC_API_KEY="any-value"
+```
+
+### Python (Anthropic SDK)
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:9465",
+    api_key="any-value",
+)
+resp = client.messages.create(
+    model="deepseek-v4-pro",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello"}],
+)
+```
+
+### Node.js (Anthropic SDK)
+
+```javascript
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "http://localhost:9465",
+  apiKey: "any-value",
+});
+```
+
+> **Note:** The proxy does not validate `api_key` on the client side. The real backend token is configured server-side via `OPENAI_API_KEY`.
+
 ## Supported Backends
 
 Any OpenAI-compatible API works as a backend:
