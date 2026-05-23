@@ -38,8 +38,11 @@ ai-coding is an HTTP proxy server that exposes the Anthropic Messages API interf
 3. Converter transforms Anthropic request → OpenAI request:
    - System prompt (string or content blocks) → system message
    - Message content (string or content blocks) → plain text messages
+   - Multi-modal content (image base64/URL) → OpenAI content parts with image_url
+   - Tool definitions → OpenAI function tools
+   - Tool use/result blocks → OpenAI tool_calls/tool messages
    - Model name passthrough (sent as-is to backend)
-   - Parameter mapping (max_tokens, temperature, top_p, stop_sequences)
+   - Parameter mapping (max_tokens, temperature, top_p, stop_sequences, tool_choice)
 4. Proxy client sends request to OpenAI backend
 5. On response, token usage is recorded to bbolt:
    - Timestamp, model, input/output tokens, duration
@@ -52,7 +55,8 @@ ai-coding is an HTTP proxy server that exposes the Anthropic Messages API interf
 2. Server opens SSE stream to OpenAI backend
 3. Server emits Anthropic SSE events in order:
    - `message_start` → `content_block_start` → `content_block_delta`* → `content_block_stop` → `message_delta` → `message_stop`
-4. After stream completes, usage is recorded (from final chunk if available)
+   - Tool calls are accumulated across chunks, then emitted as `tool_use` content blocks after text
+4. After stream completes, usage is recorded (from final chunk via stream_options.include_usage)
 
 ## Token Usage Tracking
 
@@ -113,6 +117,41 @@ Write throughput is well above proxy usage (~1 req/s typical, bounded by LLM lat
 | `internal/proxy` | OpenAI HTTP client, request/response conversion logic |
 | `internal/storage` | bbolt-based persistent token usage storage |
 
+## Tool Use (Function Calling)
+
+### Request Translation
+
+| Anthropic | OpenAI |
+|-----------|--------|
+| `tools[].name` + `input_schema` | `tools[].function.name` + `parameters` |
+| `tool_choice.type: "auto"` | `tool_choice: "auto"` |
+| `tool_choice.type: "any"` | `tool_choice: "required"` |
+| `tool_choice.type: "tool", name: "X"` | `tool_choice: {type: "function", function: {name: "X"}}` |
+| Assistant `tool_use` blocks | `tool_calls[]` on assistant message |
+| User `tool_result` blocks | Messages with `role: "tool"` + `tool_call_id` |
+
+### Response Translation
+
+| OpenAI | Anthropic |
+|--------|-----------|
+| `message.tool_calls[]` | Content blocks with `type: "tool_use"` |
+| `finish_reason: "tool_calls"` | `stop_reason: "tool_use"` |
+
+### Streaming Tool Calls
+
+Tool calls arrive incrementally across multiple chunks. The handler accumulates function name and argument fragments per tool index, then emits complete `tool_use` content blocks after text content ends.
+
+## Multi-Modal Content
+
+### Image Support
+
+| Anthropic Format | OpenAI Format |
+|-----------------|---------------|
+| `type: "image"` + `source.type: "base64"` | `type: "image_url"` + `data:mediatype;base64,DATA` URL |
+| `type: "image"` + `source.type: "url"` | `type: "image_url"` + direct URL |
+
+When a user message contains image blocks, the converter produces an array of `OpenAIContentPart` objects (mixing `text` and `image_url` parts) instead of a plain string content field.
+
 ## Model Handling
 
 Model names are passed through as-is to the backend. No mapping is applied. If the request model is empty, `DEFAULT_MODEL` is used as a fallback.
@@ -141,27 +180,28 @@ All configuration is via environment variables:
 | `/dashboard/api/usage?range=24h` | GET | Last 24 hours |
 | `/dashboard/api/usage?range=7d` | GET | Last 7 days |
 | `/dashboard/api/usage?range=30d` | GET | Last 30 days |
+| `/dashboard/api/usage?page=2&page_size=50` | GET | Paginated results |
 
 ### Dashboard Features
 
 - Summary cards: total requests, input/output/total tokens, avg duration
 - Model breakdown: request count per model
-- Recent requests table: time, model, type (stream/sync), tokens, duration
+- Token usage bar chart (24 time buckets)
+- Recent requests table: time, model, type (stream/sync), tokens, duration, input preview
+- Server-side pagination (default 100 records/page, max 1000)
 - Auto-refresh every 10 seconds
 - Time range filtering via toolbar buttons
 
 ## Limitations
 
-- Image content blocks are not converted
 - Streaming token usage depends on backend reporting usage in final chunk (mitigated by stream_options.include_usage)
 - No retry or circuit breaker logic
 - No request authentication on the proxy side
-- Dashboard API caps at 1000 records per response
+- Dashboard API caps at 1000 records per page
 
 ## Future Work
 
-- Support multi-modal content (images via base64/URL)
 - Request authentication (API key validation)
 - Rate limiting and request queuing
-- Dashboard: pagination, export
+- Dashboard: data export (CSV/JSON)
 - Metrics export (Prometheus)
