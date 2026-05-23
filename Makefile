@@ -1,4 +1,4 @@
-.PHONY: build run clean test docker-build docker-up docker-down e2e
+.PHONY: build run clean test test-real docker-build docker-up docker-down e2e
 
 build:
 	go build -o bin/server ./cmd/server
@@ -11,6 +11,9 @@ clean:
 
 test:
 	go test ./...
+
+test-real:
+	go test -v -count=1 -run TestReal ./tests/e2e/
 
 docker-build:
 	docker compose build
