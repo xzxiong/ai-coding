@@ -126,6 +126,16 @@ tr:hover { background: #f9f9f9; }
 .model-item { background: #f3f4f6; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
 .model-item .count { font-weight: 700; color: #333; }
 .empty { text-align: center; padding: 40px; color: #999; }
+.chart-container { position: relative; }
+.chart { display: flex; align-items: flex-end; gap: 2px; height: 180px; padding: 0 4px; border-bottom: 1px solid #e5e7eb; }
+.chart-bar { flex: 1; min-width: 4px; display: flex; flex-direction: column; justify-content: flex-end; position: relative; cursor: pointer; }
+.chart-bar .bar-input { background: #2563eb; border-radius: 2px 2px 0 0; }
+.chart-bar .bar-output { background: #16a34a; border-radius: 2px 2px 0 0; }
+.chart-bar:hover .bar-tooltip { display: block; }
+.bar-tooltip { display: none; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: #333; color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; z-index: 10; }
+.chart-legend { display: flex; gap: 16px; margin-top: 8px; font-size: 12px; color: #666; }
+.legend-item { display: flex; align-items: center; gap: 4px; }
+.legend-color { width: 12px; height: 12px; border-radius: 2px; }
 </style>
 </head>
 <body>
@@ -147,6 +157,17 @@ tr:hover { background: #f9f9f9; }
 </div>
 
 <div class="section">
+  <h2>Token Usage Over Time</h2>
+  <div class="chart-container" id="chart-container">
+    <div class="chart" id="chart"></div>
+    <div class="chart-legend">
+      <span class="legend-item"><span class="legend-color" style="background:#2563eb"></span>Input</span>
+      <span class="legend-item"><span class="legend-color" style="background:#16a34a"></span>Output</span>
+    </div>
+  </div>
+</div>
+
+<div class="section">
   <h2>Model Breakdown</h2>
   <div class="model-list" id="model-breakdown"></div>
 </div>
@@ -154,7 +175,7 @@ tr:hover { background: #f9f9f9; }
 <div class="section">
   <h2>Recent Requests</h2>
   <table>
-    <thead><tr><th>Time</th><th>Model</th><th>Type</th><th>Input</th><th>Output</th><th>Total</th><th>Duration</th></tr></thead>
+    <thead><tr><th>Time</th><th>Model</th><th>Type</th><th>Input</th><th>Output</th><th>Total</th><th>Duration</th><th>Preview</th></tr></thead>
     <tbody id="records-body"></tbody>
   </table>
   <div class="empty" id="empty-msg">No usage data yet</div>
@@ -190,6 +211,8 @@ function loadData() {
         modelDiv.innerHTML += '<div class="model-item"><span class="count">' + count + '</span> ' + esc(model) + '</div>';
       }
 
+      renderChart(data.records || []);
+
       const tbody = document.getElementById('records-body');
       const emptyMsg = document.getElementById('empty-msg');
       if (!data.records || data.records.length === 0) {
@@ -203,11 +226,46 @@ function loadData() {
         const t = new Date(r.timestamp);
         const time = t.toLocaleString();
         const badge = r.stream ? '<span class="badge badge-stream">stream</span>' : '<span class="badge badge-sync">sync</span>';
-        return '<tr><td>' + esc(time) + '</td><td>' + esc(r.model) + '</td><td>' + badge + '</td><td>' + fmt(r.input_tokens) + '</td><td>' + fmt(r.output_tokens) + '</td><td>' + fmt(r.total_tokens) + '</td><td>' + r.duration_ms + 'ms</td></tr>';
+        return '<tr><td>' + esc(time) + '</td><td>' + esc(r.model) + '</td><td>' + badge + '</td><td>' + fmt(r.input_tokens) + '</td><td>' + fmt(r.output_tokens) + '</td><td>' + fmt(r.total_tokens) + '</td><td>' + r.duration_ms + 'ms</td><td>' + esc(r.input_preview || '') + '</td></tr>';
       });
       tbody.innerHTML = rows.join('');
     });
 }
+function renderChart(records) {
+  const chart = document.getElementById('chart');
+  if (!records.length) { chart.innerHTML = '<div class="empty">No data for chart</div>'; return; }
+
+  const bucketCount = 24;
+  const times = records.map(r => new Date(r.timestamp).getTime());
+  const minT = Math.min(...times), maxT = Math.max(...times);
+  const span = Math.max(maxT - minT, 1);
+  const bucketSize = span / bucketCount;
+
+  const buckets = Array.from({length: bucketCount}, () => ({input: 0, output: 0}));
+  records.forEach(r => {
+    const t = new Date(r.timestamp).getTime();
+    const idx = Math.min(Math.floor((t - minT) / bucketSize), bucketCount - 1);
+    buckets[idx].input += r.input_tokens;
+    buckets[idx].output += r.output_tokens;
+  });
+
+  const maxVal = Math.max(...buckets.map(b => b.input + b.output), 1);
+  const chartHeight = 160;
+
+  chart.innerHTML = buckets.map((b, i) => {
+    const inH = (b.input / maxVal) * chartHeight;
+    const outH = (b.output / maxVal) * chartHeight;
+    const t = new Date(minT + i * bucketSize);
+    const label = t.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    const total = fmt(b.input + b.output);
+    return '<div class="chart-bar">' +
+      '<div class="bar-tooltip">' + esc(label) + ' | ' + total + ' tokens</div>' +
+      '<div class="bar-output" style="height:' + outH + 'px"></div>' +
+      '<div class="bar-input" style="height:' + inH + 'px"></div>' +
+      '</div>';
+  }).join('');
+}
+
 loadData();
 setInterval(loadData, 10000);
 </script>

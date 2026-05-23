@@ -20,6 +20,7 @@ type UsageRecord struct {
 	TotalTokens  int       `json:"total_tokens"`
 	Stream       bool      `json:"stream"`
 	Duration     int64     `json:"duration_ms"`
+	InputPreview string    `json:"input_preview,omitempty"`
 }
 
 type Store struct {

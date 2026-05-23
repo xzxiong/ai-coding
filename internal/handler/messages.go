@@ -59,14 +59,16 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	inputPreview := extractInputPreview(req.Messages)
+
 	if req.Stream {
-		h.handleStream(w, r, openaiReq, req.Model)
+		h.handleStream(w, r, openaiReq, req.Model, inputPreview)
 	} else {
-		h.handleNonStream(w, r, openaiReq, req.Model)
+		h.handleNonStream(w, r, openaiReq, req.Model, inputPreview)
 	}
 }
 
-func (h *MessagesHandler) handleNonStream(w http.ResponseWriter, r *http.Request, openaiReq *model.OpenAIRequest, reqModel string) {
+func (h *MessagesHandler) handleNonStream(w http.ResponseWriter, r *http.Request, openaiReq *model.OpenAIRequest, reqModel string, inputPreview string) {
 	start := time.Now()
 
 	resp, err := h.client.ChatCompletion(r.Context(), openaiReq)
@@ -77,7 +79,11 @@ func (h *MessagesHandler) handleNonStream(w http.ResponseWriter, r *http.Request
 	}
 
 	duration := time.Since(start).Milliseconds()
-	h.recordUsage(reqModel, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, false, duration)
+
+	log.Printf("REQ model=%s stream=false input_tokens=%d output_tokens=%d duration=%dms in=\"%s\"",
+		reqModel, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, duration, inputPreview)
+
+	h.recordUsage(reqModel, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, false, duration, inputPreview)
 
 	anthropicResp := proxy.ConvertOpenAIToAnthropic(resp, reqModel)
 
@@ -85,7 +91,7 @@ func (h *MessagesHandler) handleNonStream(w http.ResponseWriter, r *http.Request
 	json.NewEncoder(w).Encode(anthropicResp)
 }
 
-func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, openaiReq *model.OpenAIRequest, reqModel string) {
+func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, openaiReq *model.OpenAIRequest, reqModel string, inputPreview string) {
 	start := time.Now()
 
 	resp, err := h.client.ChatCompletionStream(r.Context(), openaiReq)
@@ -162,11 +168,16 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 	}
 
 	duration := time.Since(start).Milliseconds()
+
+	var inTok, outTok int
 	if streamUsage != nil {
-		h.recordUsage(reqModel, streamUsage.PromptTokens, streamUsage.CompletionTokens, true, duration)
-	} else {
-		h.recordUsage(reqModel, 0, 0, true, duration)
+		inTok, outTok = streamUsage.PromptTokens, streamUsage.CompletionTokens
 	}
+
+	log.Printf("REQ model=%s stream=true input_tokens=%d output_tokens=%d duration=%dms in=\"%s\"",
+		reqModel, inTok, outTok, duration, inputPreview)
+
+	h.recordUsage(reqModel, inTok, outTok, true, duration, inputPreview)
 
 	contentBlockStop := model.AnthropicContentBlockStop{Type: "content_block_stop", Index: 0}
 	writeSSE(w, "content_block_stop", contentBlockStop)
@@ -182,7 +193,7 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 	flusher.Flush()
 }
 
-func (h *MessagesHandler) recordUsage(reqModel string, input, output int, stream bool, duration int64) {
+func (h *MessagesHandler) recordUsage(reqModel string, input, output int, stream bool, duration int64, inputPreview string) {
 	if h.store == nil {
 		return
 	}
@@ -194,6 +205,7 @@ func (h *MessagesHandler) recordUsage(reqModel string, input, output int, stream
 		TotalTokens:  input + output,
 		Stream:       stream,
 		Duration:     duration,
+		InputPreview: inputPreview,
 	}); err != nil {
 		log.Printf("ERROR: record usage: %v", err)
 	}
@@ -207,6 +219,27 @@ func writeSSE(w io.Writer, event string, data any) {
 func writeSSERaw(w io.Writer, event string, data string) {
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
 }
+
+func truncate(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
+func extractInputPreview(messages []model.AnthropicMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			switch v := messages[i].Content.(type) {
+			case string:
+				return truncate(v, 10)
+			}
+		}
+	}
+	return ""
+}
+
 
 func writeError(w http.ResponseWriter, status int, errType, message string) {
 	w.Header().Set("Content-Type", "application/json")
