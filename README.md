@@ -217,6 +217,7 @@ go test -bench=. -benchmem ./internal/storage/
 
 - Text messages (single string and content block array)
 - System prompt (string and content block array)
+- Tool use / function calling (Anthropic tools ↔ OpenAI functions)
 - Streaming (SSE) and non-streaming responses
 - Parameters: `max_tokens`, `temperature`, `top_p`, `stop_sequences`
 - Model name passthrough (any model name is forwarded as-is)
@@ -225,7 +226,6 @@ go test -bench=. -benchmem ./internal/storage/
 ### Not Yet Supported
 
 - Image content blocks
-- Tool use / function calling
 - Proxy-side authentication
 
 ## License

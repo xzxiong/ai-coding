@@ -115,15 +115,18 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 	msgStart := proxy.BuildStreamMessageStart(reqModel)
 	writeSSE(w, "message_start", msgStart)
 
-	contentBlockStart := model.AnthropicContentBlockStart{
-		Type:         "content_block_start",
-		Index:        0,
-		ContentBlock: model.AnthropicContentBlock{Type: "text", Text: ""},
-	}
-	writeSSE(w, "content_block_start", contentBlockStart)
-	flusher.Flush()
-
 	var streamUsage *model.OpenAIUsage
+	var blockIndex int
+	var textBlockStarted bool
+	var finishReason string
+
+	type toolCallAccum struct {
+		ID        string
+		Name      string
+		Arguments string
+	}
+	var toolCalls []toolCallAccum
+
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -145,27 +148,75 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 			streamUsage = chunk.Usage
 		}
 
-		if len(chunk.Choices) > 0 {
-			delta := chunk.Choices[0].Delta
-			if delta.Content != "" {
-				event := model.AnthropicContentBlockDelta{
-					Type:  "content_block_delta",
-					Index: 0,
-					Delta: model.AnthropicContentBlock{Type: "text_delta", Text: delta.Content},
-				}
-				writeSSE(w, "content_block_delta", event)
-				flusher.Flush()
-			}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
 
-			if chunk.Choices[0].FinishReason != nil {
-				break
+		delta := chunk.Choices[0].Delta
+
+		if delta.Content != "" {
+			if !textBlockStarted {
+				writeSSE(w, "content_block_start", model.AnthropicContentBlockStart{
+					Type: "content_block_start", Index: blockIndex,
+					ContentBlock: model.AnthropicContentBlock{Type: "text", Text: ""},
+				})
+				textBlockStarted = true
 			}
+			writeSSE(w, "content_block_delta", model.AnthropicContentBlockDelta{
+				Type: "content_block_delta", Index: blockIndex,
+				Delta: model.AnthropicContentBlock{Type: "text_delta", Text: delta.Content},
+			})
+			flusher.Flush()
+		}
+
+		for _, tc := range delta.ToolCalls {
+			for tc.Index >= len(toolCalls) {
+				toolCalls = append(toolCalls, toolCallAccum{})
+			}
+			if tc.ID != "" {
+				toolCalls[tc.Index].ID = tc.ID
+			}
+			if tc.Function.Name != "" {
+				toolCalls[tc.Index].Name = tc.Function.Name
+			}
+			if tc.Function.Arguments != "" {
+				toolCalls[tc.Index].Arguments += tc.Function.Arguments
+			}
+		}
+
+		if chunk.Choices[0].FinishReason != nil {
+			finishReason = *chunk.Choices[0].FinishReason
+			break
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("ERROR: stream read error: %v", err)
 	}
+
+	if textBlockStarted {
+		writeSSE(w, "content_block_stop", model.AnthropicContentBlockStop{Type: "content_block_stop", Index: blockIndex})
+		blockIndex++
+	}
+
+	for _, tc := range toolCalls {
+		writeSSE(w, "content_block_start", model.AnthropicContentBlockStart{
+			Type: "content_block_start", Index: blockIndex,
+			ContentBlock: model.AnthropicContentBlock{
+				Type: "tool_use", ID: tc.ID, Name: tc.Name,
+				Input: json.RawMessage("{}"),
+			},
+		})
+		if tc.Arguments != "" {
+			writeSSE(w, "content_block_delta", map[string]any{
+				"type": "content_block_delta", "index": blockIndex,
+				"delta": map[string]any{"type": "input_json_delta", "partial_json": tc.Arguments},
+			})
+		}
+		writeSSE(w, "content_block_stop", model.AnthropicContentBlockStop{Type: "content_block_stop", Index: blockIndex})
+		blockIndex++
+	}
+	flusher.Flush()
 
 	duration := time.Since(start).Milliseconds()
 
@@ -179,13 +230,15 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 	h.recordUsage(reqModel, inTok, outTok, true, duration, inputPreview)
 
-	contentBlockStop := model.AnthropicContentBlockStop{Type: "content_block_stop", Index: 0}
-	writeSSE(w, "content_block_stop", contentBlockStop)
+	stopReason := "end_turn"
+	if finishReason == "tool_calls" || len(toolCalls) > 0 {
+		stopReason = "tool_use"
+	}
 
 	msgDelta := model.AnthropicMessageDelta{
 		Type:  "message_delta",
-		Delta: model.AnthropicMessageDeltaBody{StopReason: "end_turn"},
-		Usage: model.AnthropicUsage{OutputTokens: 0},
+		Delta: model.AnthropicMessageDeltaBody{StopReason: stopReason},
+		Usage: model.AnthropicUsage{OutputTokens: outTok},
 	}
 	writeSSE(w, "message_delta", msgDelta)
 

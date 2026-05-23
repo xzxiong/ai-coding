@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -17,6 +18,14 @@ func ConvertOpenAIToAnthropic(resp *model.OpenAIResponse, reqModel string) *mode
 			content = append(content, model.AnthropicContentBlock{
 				Type: "text",
 				Text: choice.Message.Content,
+			})
+		}
+		for _, tc := range choice.Message.ToolCalls {
+			content = append(content, model.AnthropicContentBlock{
+				Type:  "tool_use",
+				ID:    tc.ID,
+				Name:  tc.Function.Name,
+				Input: json.RawMessage(tc.Function.Arguments),
 			})
 		}
 		stopReason = mapFinishReason(choice.FinishReason)
@@ -56,6 +65,8 @@ func mapFinishReason(reason string) string {
 		return "end_turn"
 	case "length":
 		return "max_tokens"
+	case "tool_calls":
+		return "tool_use"
 	case "content_filter":
 		return "end_turn"
 	default:

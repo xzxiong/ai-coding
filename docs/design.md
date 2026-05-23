@@ -152,18 +152,16 @@ All configuration is via environment variables:
 
 ## Limitations
 
-- Only text content is supported; image/tool_use content blocks are not converted
-- Tool calling (function calling) is not proxied
-- Streaming token usage depends on backend reporting usage in final chunk
+- Image content blocks are not converted
+- Streaming token usage depends on backend reporting usage in final chunk (mitigated by stream_options.include_usage)
 - No retry or circuit breaker logic
 - No request authentication on the proxy side
-- Dashboard reads full record set on each query (no server-side pagination)
+- Dashboard API caps at 1000 records per response
 
 ## Future Work
 
 - Support multi-modal content (images via base64/URL)
-- Tool use / function calling translation
 - Request authentication (API key validation)
 - Rate limiting and request queuing
-- Dashboard: pagination, export, per-day aggregation charts
+- Dashboard: pagination, export
 - Metrics export (Prometheus)

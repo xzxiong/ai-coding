@@ -1,5 +1,7 @@
 package model
 
+import "encoding/json"
+
 type AnthropicRequest struct {
 	Model         string             `json:"model"`
 	Messages      []AnthropicMessage `json:"messages"`
@@ -10,6 +12,14 @@ type AnthropicRequest struct {
 	TopP          *float64           `json:"top_p,omitempty"`
 	TopK          *int               `json:"top_k,omitempty"`
 	StopSequences []string           `json:"stop_sequences,omitempty"`
+	Tools         []AnthropicTool    `json:"tools,omitempty"`
+	ToolChoice    any                `json:"tool_choice,omitempty"`
+}
+
+type AnthropicTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema"`
 }
 
 type AnthropicMessage struct {
@@ -18,8 +28,11 @@ type AnthropicMessage struct {
 }
 
 type AnthropicContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 type AnthropicResponse struct {
