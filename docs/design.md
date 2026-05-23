@@ -123,7 +123,7 @@ All configuration is via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LISTEN_ADDR` | `:8080` | Server listen address |
+| `LISTEN_ADDR` | `:9465` | Server listen address |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Target OpenAI-compatible endpoint |
 | `OPENAI_API_KEY` | (empty) | API key for the backend |
 | `DEFAULT_MODEL` | `gpt-4o` | Fallback model when request model is empty |

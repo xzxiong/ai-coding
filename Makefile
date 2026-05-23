@@ -33,7 +33,7 @@ docker-down:
 
 e2e:
 	pip install -q -r tests/e2e/requirements.txt
-	PROXY_URL=http://localhost:8080 pytest tests/e2e/test_anthropic_sdk.py -v
+	PROXY_URL=http://localhost:9465 pytest tests/e2e/test_anthropic_sdk.py -v
 
 help:
 	@echo "Usage: make <target>"

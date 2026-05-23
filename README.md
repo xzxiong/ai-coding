@@ -10,14 +10,14 @@ export OPENAI_API_KEY="sk-xxx"
 make run
 ```
 
-The server starts on `:8080` by default. Dashboard available at `http://localhost:8080/dashboard/`.
+The server starts on `:9465` by default. Dashboard available at `http://localhost:9465/dashboard/`.
 
 ## Usage
 
 Send requests using the Anthropic Messages API format:
 
 ```bash
-curl -X POST http://localhost:8080/v1/messages \
+curl -X POST http://localhost:9465/v1/messages \
   -H "Content-Type: application/json" \
   -d '{
     "model": "deepseek-v4-pro",
@@ -31,7 +31,7 @@ curl -X POST http://localhost:8080/v1/messages \
 ### Streaming
 
 ```bash
-curl -X POST http://localhost:8080/v1/messages \
+curl -X POST http://localhost:9465/v1/messages \
   -H "Content-Type: application/json" \
   -d '{
     "model": "deepseek-v4-pro",
@@ -46,7 +46,7 @@ curl -X POST http://localhost:8080/v1/messages \
 ### With System Prompt
 
 ```bash
-curl -X POST http://localhost:8080/v1/messages \
+curl -X POST http://localhost:9465/v1/messages \
   -H "Content-Type: application/json" \
   -d '{
     "model": "claude-sonnet-4.6",
@@ -60,7 +60,7 @@ curl -X POST http://localhost:8080/v1/messages \
 
 ## Token Usage Dashboard
 
-Access the dashboard at `http://localhost:8080/dashboard/` to view:
+Access the dashboard at `http://localhost:9465/dashboard/` to view:
 
 - Total requests, input/output/total tokens
 - Average request duration
@@ -72,11 +72,11 @@ Access the dashboard at `http://localhost:8080/dashboard/` to view:
 
 ```bash
 # All usage data
-curl http://localhost:8080/dashboard/api/usage
+curl http://localhost:9465/dashboard/api/usage
 
 # Filter by time range
-curl http://localhost:8080/dashboard/api/usage?range=24h
-curl http://localhost:8080/dashboard/api/usage?range=7d
+curl http://localhost:9465/dashboard/api/usage?range=24h
+curl http://localhost:9465/dashboard/api/usage?range=7d
 ```
 
 Response:
@@ -96,7 +96,7 @@ Response:
 
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
-| `LISTEN_ADDR` | `:8080` | Server listen address |
+| `LISTEN_ADDR` | `:9465` | Server listen address |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Target OpenAI-compatible endpoint |
 | `OPENAI_API_KEY` | (empty) | API key for the backend |
 | `DEFAULT_MODEL` | `gpt-4o` | Fallback model when request model is empty |

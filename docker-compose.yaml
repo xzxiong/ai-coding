@@ -2,9 +2,9 @@ services:
   server:
     image: ${IMAGE_NAME:-ai-coding}:${IMAGE_TAG:-latest}
     ports:
-      - "8080:8080"
+      - "9465:9465"
     environment:
-      - LISTEN_ADDR=:8080
+      - LISTEN_ADDR=:9465
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4o}

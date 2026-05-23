@@ -21,5 +21,5 @@ RUN apt-get -qq update \
 COPY --from=builder /server /server
 
 WORKDIR /
-EXPOSE 8080
+EXPOSE 9465
 ENTRYPOINT ["/server"]
