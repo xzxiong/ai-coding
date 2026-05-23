@@ -186,7 +186,6 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 		if chunk.Choices[0].FinishReason != nil {
 			finishReason = *chunk.Choices[0].FinishReason
-			break
 		}
 	}
 
