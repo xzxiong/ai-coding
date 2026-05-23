@@ -13,6 +13,8 @@ test:
 	go test ./...
 
 test-real:
+	@test -n "$$TEST_BASE_URL" || (echo "ERROR: TEST_BASE_URL is not set"; exit 1)
+	@test -n "$$TEST_TOKEN" || (echo "ERROR: TEST_TOKEN is not set"; exit 1)
 	go test -v -count=1 -run TestReal ./tests/e2e/
 
 docker-build:

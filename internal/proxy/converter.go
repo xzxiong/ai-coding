@@ -118,18 +118,11 @@ func extractContentText(content any) (string, error) {
 }
 
 func mapModel(anthropicModel, defaultModel string) string {
-	mapping := map[string]string{
-		"claude-opus-4-7":       "gpt-4o",
-		"claude-sonnet-4-6":     "gpt-4o",
-		"claude-haiku-4-5":      "gpt-4o-mini",
-		"claude-3-5-sonnet-latest": "gpt-4o",
-		"claude-3-5-haiku-latest":  "gpt-4o-mini",
-	}
-	if mapped, ok := mapping[anthropicModel]; ok {
-		return mapped
+	if anthropicModel != "" {
+		return anthropicModel
 	}
 	if defaultModel != "" {
 		return defaultModel
 	}
-	return anthropicModel
+	return "gpt-4o"
 }

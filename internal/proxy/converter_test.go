@@ -16,13 +16,13 @@ func TestConvertAnthropicToOpenAI_BasicMessage(t *testing.T) {
 		},
 	}
 
-	result, err := ConvertAnthropicToOpenAI(req, "gpt-4o")
+	result, err := ConvertAnthropicToOpenAI(req, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if result.Model != "gpt-4o" {
-		t.Errorf("expected model gpt-4o, got %s", result.Model)
+	if result.Model != "claude-sonnet-4-6" {
+		t.Errorf("expected model claude-sonnet-4-6, got %s", result.Model)
 	}
 	if *result.MaxTokens != 1024 {
 		t.Errorf("expected max_tokens 1024, got %d", *result.MaxTokens)
@@ -48,7 +48,7 @@ func TestConvertAnthropicToOpenAI_WithSystemString(t *testing.T) {
 		},
 	}
 
-	result, err := ConvertAnthropicToOpenAI(req, "gpt-4o")
+	result, err := ConvertAnthropicToOpenAI(req, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestConvertAnthropicToOpenAI_WithSystemBlocks(t *testing.T) {
 		},
 	}
 
-	result, err := ConvertAnthropicToOpenAI(req, "gpt-4o")
+	result, err := ConvertAnthropicToOpenAI(req, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -106,13 +106,13 @@ func TestConvertAnthropicToOpenAI_ContentBlocks(t *testing.T) {
 		},
 	}
 
-	result, err := ConvertAnthropicToOpenAI(req, "gpt-4o")
+	result, err := ConvertAnthropicToOpenAI(req, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if result.Model != "gpt-4o-mini" {
-		t.Errorf("expected gpt-4o-mini for haiku, got %s", result.Model)
+	if result.Model != "claude-haiku-4-5" {
+		t.Errorf("expected claude-haiku-4-5 passthrough, got %s", result.Model)
 	}
 	if result.Messages[0].Content != "Hello \nWorld" {
 		t.Errorf("unexpected content: %q", result.Messages[0].Content)
@@ -133,7 +133,7 @@ func TestConvertAnthropicToOpenAI_Parameters(t *testing.T) {
 		},
 	}
 
-	result, err := ConvertAnthropicToOpenAI(req, "gpt-4o")
+	result, err := ConvertAnthropicToOpenAI(req, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestConvertAnthropicToOpenAI_MultiTurn(t *testing.T) {
 		},
 	}
 
-	result, err := ConvertAnthropicToOpenAI(req, "gpt-4o")
+	result, err := ConvertAnthropicToOpenAI(req, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -202,22 +202,34 @@ func TestConvertAnthropicToOpenAI_JSONRoundTrip(t *testing.T) {
 }
 
 func TestMapModel(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"claude-opus-4-7", "gpt-4o"},
-		{"claude-sonnet-4-6", "gpt-4o"},
-		{"claude-haiku-4-5", "gpt-4o-mini"},
-		{"claude-3-5-sonnet-latest", "gpt-4o"},
-		{"claude-3-5-haiku-latest", "gpt-4o-mini"},
-		{"unknown-model", "gpt-4o"},
-	}
-
-	for _, tc := range tests {
-		got := mapModel(tc.input, "gpt-4o")
-		if got != tc.expected {
-			t.Errorf("mapModel(%q) = %q, want %q", tc.input, got, tc.expected)
+	t.Run("passthrough", func(t *testing.T) {
+		tests := []struct {
+			input    string
+			expected string
+		}{
+			{"claude-sonnet-4-6", "claude-sonnet-4-6"},
+			{"deepseek-v4-pro", "deepseek-v4-pro"},
+			{"gpt-4o", "gpt-4o"},
 		}
-	}
+		for _, tc := range tests {
+			got := mapModel(tc.input, "whatever")
+			if got != tc.expected {
+				t.Errorf("mapModel(%q) = %q, want %q", tc.input, got, tc.expected)
+			}
+		}
+	})
+
+	t.Run("empty_model_uses_default", func(t *testing.T) {
+		got := mapModel("", "deepseek-v4-pro")
+		if got != "deepseek-v4-pro" {
+			t.Errorf("expected deepseek-v4-pro, got %s", got)
+		}
+	})
+
+	t.Run("empty_model_no_default_uses_gpt4o", func(t *testing.T) {
+		got := mapModel("", "")
+		if got != "gpt-4o" {
+			t.Errorf("expected gpt-4o, got %s", got)
+		}
+	})
 }
