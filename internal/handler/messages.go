@@ -77,6 +77,11 @@ func (h *MessagesHandler) handleNonStream(w http.ResponseWriter, r *http.Request
 	rid := genReqID()
 	start := time.Now()
 
+	if h.cfg.Debug {
+		reqBody, _ := json.Marshal(openaiReq)
+		log.Printf("[%s] DEBUG REQ_BODY: %s", rid, string(reqBody))
+	}
+
 	resp, err := h.client.ChatCompletion(r.Context(), openaiReq)
 	if err != nil {
 		log.Printf("[%s] ERROR: proxy request failed: %v", rid, err)
@@ -85,6 +90,11 @@ func (h *MessagesHandler) handleNonStream(w http.ResponseWriter, r *http.Request
 	}
 
 	duration := time.Since(start).Milliseconds()
+
+	if h.cfg.Debug {
+		respBody, _ := json.Marshal(resp)
+		log.Printf("[%s] DEBUG RESP_BODY: %s", rid, string(respBody))
+	}
 
 	log.Printf("[%s] REQ model=%s stream=false input_tokens=%d output_tokens=%d duration=%dms in=\"%s\"",
 		rid, reqModel, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, duration, inputPreview)
@@ -100,6 +110,14 @@ func (h *MessagesHandler) handleNonStream(w http.ResponseWriter, r *http.Request
 func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, openaiReq *model.OpenAIRequest, reqModel string, inputPreview string) {
 	rid := genReqID()
 	start := time.Now()
+
+	log.Printf("[%s] START model=%s tools=%d msgs=%d in=\"%s\"",
+		rid, reqModel, len(openaiReq.Tools), len(openaiReq.Messages), inputPreview)
+
+	if h.cfg.Debug {
+		reqBody, _ := json.Marshal(openaiReq)
+		log.Printf("[%s] DEBUG REQ_BODY: %s", rid, string(reqBody))
+	}
 
 	resp, err := h.client.ChatCompletionStream(r.Context(), openaiReq)
 	if err != nil {
@@ -126,6 +144,7 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 	var blockIndex int
 	var textBlockStarted bool
 	var finishReason string
+	var textContent strings.Builder
 
 	type toolCallAccum struct {
 		ID        string
@@ -145,6 +164,10 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 			break
 		}
 
+		if h.cfg.Debug {
+			log.Printf("[%s] DEBUG CHUNK: %s", rid, data)
+		}
+
 		var chunk model.OpenAIStreamResponse
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			log.Printf("WARN: malformed stream chunk: %v", err)
@@ -162,6 +185,7 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 		delta := chunk.Choices[0].Delta
 
 		if delta.Content != "" {
+			textContent.WriteString(delta.Content)
 			if !textBlockStarted {
 				writeSSE(w, "content_block_start", model.AnthropicContentBlockStart{
 					Type: "content_block_start", Index: blockIndex,
@@ -236,6 +260,10 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 			log.Printf("[%s] REQ model=%s stream=true tool[%d]=%s args=%s",
 				rid, reqModel, i, tc.Name, truncate(tc.Arguments, 80))
 		}
+	}
+	if textContent.Len() > 0 {
+		log.Printf("[%s] REQ model=%s stream=true out=\"%s\"",
+			rid, reqModel, truncate(textContent.String(), 200))
 	}
 
 	log.Printf("[%s] REQ model=%s stream=true input_tokens=%d output_tokens=%d duration=%dms in=\"%s\"",

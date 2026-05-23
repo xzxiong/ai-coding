@@ -10,6 +10,7 @@ type Config struct {
 	OpenAIAPIKey  string
 	DefaultModel  string
 	DataFile      string
+	Debug         bool
 }
 
 func Load() *Config {
@@ -19,6 +20,7 @@ func Load() *Config {
 		OpenAIAPIKey:  getEnv("OPENAI_API_KEY", ""),
 		DefaultModel:  getEnv("DEFAULT_MODEL", "gpt-4o"),
 		DataFile:      getEnv("DATA_FILE", "usage.db"),
+		Debug:         os.Getenv("DEBUG") == "1" || os.Getenv("DEBUG") == "true",
 	}
 }
 

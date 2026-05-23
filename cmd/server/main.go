@@ -39,6 +39,9 @@ func main() {
 
 	log.Printf("Starting server on %s", cfg.ListenAddr)
 	log.Printf("Proxying to %s", cfg.OpenAIBaseURL)
+	if cfg.Debug {
+		log.Printf("DEBUG mode enabled")
+	}
 	log.Printf("Dashboard at http://localhost%s/dashboard/", cfg.ListenAddr)
 
 	go func() {
