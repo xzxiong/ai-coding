@@ -3,10 +3,13 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"time"
 
 	"github.com/xzxiong/ai-coding/internal/config"
 	"github.com/xzxiong/ai-coding/internal/model"
@@ -18,9 +21,22 @@ type Client struct {
 }
 
 func NewClient(cfg *config.Config) *Client {
+	// No request-level Timeout — streaming responses have unbounded duration.
+	// Only connection-phase timeouts are set to fail fast on unreachable upstreams.
 	return &Client{
-		httpClient: &http.Client{},
-		cfg:        cfg,
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   10 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout: 10 * time.Second,
+				TLSClientConfig:     &tls.Config{},
+				IdleConnTimeout:     90 * time.Second,
+				MaxIdleConnsPerHost: 10,
+			},
+		},
+		cfg: cfg,
 	}
 }
 

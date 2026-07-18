@@ -222,6 +222,16 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("[%s] ERROR: stream read error: %v", rid, err)
+		// Send Anthropic error event so Claude Code retries instead of seeing a silent empty response.
+		writeSSE(w, "error", map[string]any{
+			"type": "error",
+			"error": map[string]string{
+				"type":    "api_error",
+				"message": fmt.Sprintf("upstream stream error: %v", err),
+			},
+		})
+		flusher.Flush()
+		return
 	}
 
 	if textBlockStarted {
