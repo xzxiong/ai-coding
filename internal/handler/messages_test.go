@@ -440,3 +440,117 @@ func TestMessagesHandler_WithStore_Stream(t *testing.T) {
 		t.Error("expected stream=true")
 	}
 }
+
+// The combined judgment: an upstream failure is mapped to a prompt-too-long
+// invalid_request_error (so Claude Code auto-compacts) only when it is a genuine
+// context overflow — a 413, a 400 whose body names the reason, or a 400 on a
+// request we estimate to be over the token threshold. Everything else, including
+// a small opaque 400, stays a transient 502 api_error.
+func TestMessagesHandler_UpstreamErrorMapping(t *testing.T) {
+	// A body large enough that estimateTokens (~len/4) clears the low test
+	// threshold below. 40 KB / 4 = ~10k tokens.
+	bigContent := strings.Repeat("x", 40000)
+
+	for _, tc := range []struct {
+		name         string
+		status       int
+		upstreamBody string
+		content      string
+		stream       bool
+		wantStatus   int
+		wantType     string
+	}{
+		{
+			name:         "opaque 400 on large request -> prompt too long (token estimate)",
+			status:       http.StatusBadRequest,
+			upstreamBody: `{"error":{"type":"bad_response_status_code","code":"bad_response_status_code"}}`,
+			content:      bigContent,
+			wantStatus:   http.StatusBadRequest,
+			wantType:     "invalid_request_error",
+		},
+		{
+			name:         "opaque 400 on large request, streaming -> prompt too long",
+			status:       http.StatusBadRequest,
+			upstreamBody: `{"error":{"type":"bad_response_status_code","code":"bad_response_status_code"}}`,
+			content:      bigContent,
+			stream:       true,
+			wantStatus:   http.StatusBadRequest,
+			wantType:     "invalid_request_error",
+		},
+		{
+			name:         "400 with context-length keyword on small request -> prompt too long",
+			status:       http.StatusBadRequest,
+			upstreamBody: `{"error":{"message":"This model's maximum context length is 200000 tokens"}}`,
+			content:      "Hi",
+			wantStatus:   http.StatusBadRequest,
+			wantType:     "invalid_request_error",
+		},
+		{
+			name:         "413 -> prompt too long unconditionally",
+			status:       http.StatusRequestEntityTooLarge,
+			upstreamBody: `too large`,
+			content:      "Hi",
+			wantStatus:   http.StatusBadRequest,
+			wantType:     "invalid_request_error",
+		},
+		{
+			name:         "opaque 400 on small request -> transient 502",
+			status:       http.StatusBadRequest,
+			upstreamBody: `{"error":{"type":"bad_response_status_code","code":"bad_response_status_code"}}`,
+			content:      "Hi",
+			wantStatus:   http.StatusBadGateway,
+			wantType:     "api_error",
+		},
+		{
+			name:         "500 -> transient 502",
+			status:       http.StatusInternalServerError,
+			upstreamBody: `upstream boom`,
+			content:      "Hi",
+			wantStatus:   http.StatusBadGateway,
+			wantType:     "api_error",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				w.Write([]byte(tc.upstreamBody))
+			}))
+			defer server.Close()
+
+			// Low threshold so bigContent clears it while "Hi" does not.
+			cfg := &config.Config{OpenAIBaseURL: server.URL, DefaultModel: "gpt-4o", ContextOverflowTokens: 1000}
+			handler := NewMessagesHandler(cfg)
+
+			payload := map[string]any{
+				"model":      "claude-sonnet-4-6",
+				"max_tokens": 100,
+				"stream":     tc.stream,
+				"messages":   []map[string]any{{"role": "user", "content": tc.content}},
+			}
+			bodyBytes, _ := json.Marshal(payload)
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(bodyBytes)))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d: %s", tc.wantStatus, rec.Code, rec.Body.String())
+			}
+			var errResp struct {
+				Error struct {
+					Type    string `json:"type"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if errResp.Error.Type != tc.wantType {
+				t.Errorf("expected error type %q, got %q", tc.wantType, errResp.Error.Type)
+			}
+			if tc.wantType == "invalid_request_error" && !strings.Contains(errResp.Error.Message, "prompt is too long") {
+				t.Errorf("expected prompt-too-long message, got %q", errResp.Error.Message)
+			}
+		})
+	}
+}

@@ -2,3 +2,4 @@
 export OPENAI_BASE_URL="https://api-taas.moi.matrixorigin.cn/v1"
 export OPENAI_API_KEY="sk-your-api-key-here"
 export DEFAULT_MODEL="deepseek-v4-fast"
+export CONTEXT_OVERFLOW_TOKENS=2000000

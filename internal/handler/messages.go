@@ -3,6 +3,7 @@ package handler
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -85,7 +86,7 @@ func (h *MessagesHandler) handleNonStream(w http.ResponseWriter, r *http.Request
 	resp, err := h.client.ChatCompletion(r.Context(), openaiReq)
 	if err != nil {
 		log.Printf("[%s] ERROR: proxy request failed: %v", rid, err)
-		writeError(w, http.StatusBadGateway, "api_error", err.Error())
+		writeUpstreamError(w, rid, err, openaiReq, h.cfg.ContextOverflowTokens)
 		return
 	}
 
@@ -122,7 +123,7 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 	resp, err := h.client.ChatCompletionStream(r.Context(), openaiReq)
 	if err != nil {
 		log.Printf("[%s] ERROR: proxy stream request failed: %v", rid, err)
-		writeError(w, http.StatusBadGateway, "api_error", err.Error())
+		writeUpstreamError(w, rid, err, openaiReq, h.cfg.ContextOverflowTokens)
 		return
 	}
 	defer resp.Body.Close()
@@ -344,6 +345,72 @@ func extractInputPreview(messages []model.AnthropicMessage) string {
 	return ""
 }
 
+
+// contextOverflowKeywords are substrings a well-behaved upstream includes in
+// its error body when the prompt exceeds the model's context window. The
+// backend behind cn.xapex.cc collapses this into an opaque
+// "bad_response_status_code" 400 that matches none of these — hence the token
+// estimate below is the primary signal; keyword matching is a fallback for
+// upstreams that report the real reason.
+var contextOverflowKeywords = []string{
+	"context_length_exceeded",
+	"maximum context length",
+	"prompt is too long",
+	"too many tokens",
+	"reduce the length",
+}
+
+func looksLikeContextOverflow(body string) bool {
+	b := strings.ToLower(body)
+	for _, kw := range contextOverflowKeywords {
+		if strings.Contains(b, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// estimateTokens is a coarse magnitude estimate of the request size, ~4 chars
+// per token. Used only to disambiguate an opaque upstream 400, never to reject
+// a request before forwarding it.
+func estimateTokens(req *model.OpenAIRequest) int {
+	b, err := json.Marshal(req)
+	if err != nil {
+		return 0
+	}
+	return len(b) / 4
+}
+
+// isContextOverflow decides whether an upstream failure is a context-length
+// overflow. 413 is unconditional (semantically "request too large"); 400 is a
+// grab-bag, so it counts only when the body names the reason OR the request we
+// sent is itself large enough to plausibly overflow.
+func isContextOverflow(apiErr *proxy.APIError, req *model.OpenAIRequest, threshold int) bool {
+	switch apiErr.StatusCode {
+	case http.StatusRequestEntityTooLarge:
+		return true
+	case http.StatusBadRequest:
+		return looksLikeContextOverflow(apiErr.Body) || estimateTokens(req) > threshold
+	}
+	return false
+}
+
+// writeUpstreamError maps an upstream proxy failure onto an Anthropic-native
+// error. A context-length overflow is translated into the "prompt is too long"
+// invalid_request_error that Claude Code recognizes to trigger its
+// auto-compaction and retry. Everything else is surfaced as a 502 api_error so
+// the client treats it as a transient failure.
+func writeUpstreamError(w http.ResponseWriter, rid string, err error, req *model.OpenAIRequest, threshold int) {
+	var apiErr *proxy.APIError
+	if errors.As(err, &apiErr) && isContextOverflow(apiErr, req, threshold) {
+		log.Printf("[%s] context overflow: mapping upstream %d to prompt-too-long (est_tokens=%d threshold=%d)",
+			rid, apiErr.StatusCode, estimateTokens(req), threshold)
+		writeError(w, http.StatusBadRequest, "invalid_request_error",
+			"prompt is too long: exceeds the model's maximum context length")
+		return
+	}
+	writeError(w, http.StatusBadGateway, "api_error", err.Error())
+}
 
 func writeError(w http.ResponseWriter, status int, errType, message string) {
 	w.Header().Set("Content-Type", "application/json")

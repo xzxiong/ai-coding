@@ -15,6 +15,17 @@ import (
 	"github.com/xzxiong/ai-coding/internal/model"
 )
 
+// APIError carries the upstream HTTP status so callers can distinguish a
+// context-length rejection (400/413) from a transient upstream failure.
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("openai returned status %d: %s", e.StatusCode, e.Body)
+}
+
 type Client struct {
 	httpClient *http.Client
 	cfg        *config.Config
@@ -65,7 +76,7 @@ func (c *Client) ChatCompletion(ctx context.Context, req *model.OpenAIRequest) (
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var openaiResp model.OpenAIResponse
@@ -103,7 +114,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, req *model.OpenAIRequ
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, fmt.Errorf("openai returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	return resp, nil
