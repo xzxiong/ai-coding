@@ -85,7 +85,8 @@ func (h *MessagesHandler) handleNonStream(w http.ResponseWriter, r *http.Request
 
 	resp, err := h.client.ChatCompletion(r.Context(), openaiReq)
 	if err != nil {
-		log.Printf("[%s] ERROR: proxy request failed: %v", rid, err)
+		log.Printf("[%s] ERROR: proxy request failed: model=%s tools=%d msgs=%d est_tokens=%d in=\"%s\" %v",
+			rid, reqModel, len(openaiReq.Tools), len(openaiReq.Messages), estimateTokens(openaiReq), inputPreview, err)
 		writeUpstreamError(w, rid, err, openaiReq, h.cfg.ContextOverflowTokens)
 		return
 	}
@@ -122,7 +123,8 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 	resp, err := h.client.ChatCompletionStream(r.Context(), openaiReq)
 	if err != nil {
-		log.Printf("[%s] ERROR: proxy stream request failed: %v", rid, err)
+		log.Printf("[%s] ERROR: proxy stream request failed: model=%s tools=%d msgs=%d est_tokens=%d in=\"%s\" %v",
+			rid, reqModel, len(openaiReq.Tools), len(openaiReq.Messages), estimateTokens(openaiReq), inputPreview, err)
 		writeUpstreamError(w, rid, err, openaiReq, h.cfg.ContextOverflowTokens)
 		return
 	}
@@ -402,12 +404,21 @@ func isContextOverflow(apiErr *proxy.APIError, req *model.OpenAIRequest, thresho
 // the client treats it as a transient failure.
 func writeUpstreamError(w http.ResponseWriter, rid string, err error, req *model.OpenAIRequest, threshold int) {
 	var apiErr *proxy.APIError
-	if errors.As(err, &apiErr) && isContextOverflow(apiErr, req, threshold) {
-		log.Printf("[%s] context overflow: mapping upstream %d to prompt-too-long (est_tokens=%d threshold=%d)",
-			rid, apiErr.StatusCode, estimateTokens(req), threshold)
-		writeError(w, http.StatusBadRequest, "invalid_request_error",
-			"prompt is too long: exceeds the model's maximum context length")
-		return
+	if errors.As(err, &apiErr) {
+		if isContextOverflow(apiErr, req, threshold) {
+			log.Printf("[%s] context overflow: mapping upstream %d to prompt-too-long (est_tokens=%d threshold=%d)",
+				rid, apiErr.StatusCode, estimateTokens(req), threshold)
+			writeError(w, http.StatusBadRequest, "invalid_request_error",
+				"prompt is too long: exceeds the model's maximum context length")
+			return
+		}
+		// An upstream 400 that did NOT qualify as overflow is the interesting
+		// case: log why it stays a transient 502 so it is not mistaken for a
+		// context-length problem later.
+		if apiErr.StatusCode == http.StatusBadRequest {
+			log.Printf("[%s] upstream 400 not treated as overflow (est_tokens=%d threshold=%d) -> 502; body=%s",
+				rid, estimateTokens(req), threshold, apiErr.Body)
+		}
 	}
 	writeError(w, http.StatusBadGateway, "api_error", err.Error())
 }
