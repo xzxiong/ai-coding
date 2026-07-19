@@ -3,3 +3,8 @@ export OPENAI_BASE_URL="https://api-taas.moi.matrixorigin.cn/v1"
 export OPENAI_API_KEY="sk-your-api-key-here"
 export DEFAULT_MODEL="deepseek-v4-fast"
 export CONTEXT_OVERFLOW_TOKENS=200000
+# Set to 1 if the upstream rejects requests carrying stop sequences with an
+# opaque 400 (seen with some new-api/one-api relays). Drops stop before
+# forwarding so stop-bearing requests (e.g. Claude Code's security monitor)
+# don't fail.
+# export STRIP_STOP_SEQUENCES=1

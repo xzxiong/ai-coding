@@ -16,6 +16,12 @@ type Config struct {
 	// upstream 400 is treated as a context-length overflow (mapped to a
 	// prompt-too-long error). Smaller 400s fall through to a transient 502.
 	ContextOverflowTokens int
+	// StripStopSequences drops the request's stop sequences before forwarding.
+	// Some upstream gateways (e.g. new-api/one-api relays) reject any non-empty
+	// stop with an opaque 400, which the proxy then surfaces as a 502. Enable
+	// this for such upstreams so requests that carry stop_sequences (e.g. Claude
+	// Code's security monitor) still succeed.
+	StripStopSequences bool
 }
 
 func Load() *Config {
@@ -27,6 +33,7 @@ func Load() *Config {
 		DataFile:              getEnv("DATA_FILE", "usage.db"),
 		Debug:                 os.Getenv("DEBUG") == "1" || os.Getenv("DEBUG") == "true",
 		ContextOverflowTokens: getEnvInt("CONTEXT_OVERFLOW_TOKENS", 200000),
+		StripStopSequences:    os.Getenv("STRIP_STOP_SEQUENCES") == "1" || os.Getenv("STRIP_STOP_SEQUENCES") == "true",
 	}
 }
 

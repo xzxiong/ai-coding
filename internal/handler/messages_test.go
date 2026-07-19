@@ -109,6 +109,71 @@ func TestMessagesHandler_NonStream(t *testing.T) {
 	}
 }
 
+func TestMessagesHandler_StripStopSequences(t *testing.T) {
+	mockResp := model.OpenAIResponse{
+		ID:      "chatcmpl-test",
+		Object:  "chat.completion",
+		Created: 1700000000,
+		Model:   "gpt-4o",
+		Choices: []model.OpenAIChoice{
+			{Index: 0, Message: model.OpenAIMessage{Role: "assistant", Content: "ok"}, FinishReason: "stop"},
+		},
+	}
+
+	tests := []struct {
+		name     string
+		strip    bool
+		wantStop []string
+	}{
+		{name: "strip enabled drops stop", strip: true, wantStop: nil},
+		{name: "strip disabled forwards stop", strip: false, wantStop: []string{"</block>"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotStop []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req model.OpenAIRequest
+				body, _ := io.ReadAll(r.Body)
+				if err := json.Unmarshal(body, &req); err != nil {
+					t.Errorf("failed to parse request: %v", err)
+				}
+				gotStop = req.Stop
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(mockResp)
+			}))
+			defer server.Close()
+
+			cfg := &config.Config{
+				OpenAIBaseURL:      server.URL,
+				OpenAIAPIKey:       "test-key",
+				DefaultModel:       "gpt-4o",
+				StripStopSequences: tc.strip,
+			}
+			handler := NewMessagesHandler(cfg)
+
+			body := `{"model":"claude-sonnet-4-6","max_tokens":1024,"stop_sequences":["</block>"],"messages":[{"role":"user","content":"Hello"}]}`
+			req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if len(gotStop) != len(tc.wantStop) {
+				t.Fatalf("expected stop %v, got %v", tc.wantStop, gotStop)
+			}
+			for i := range tc.wantStop {
+				if gotStop[i] != tc.wantStop[i] {
+					t.Errorf("expected stop %v, got %v", tc.wantStop, gotStop)
+				}
+			}
+		})
+	}
+}
+
 func TestMessagesHandler_Stream(t *testing.T) {
 	chunks := []string{
 		`{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`,

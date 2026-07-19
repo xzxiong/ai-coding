@@ -65,6 +65,12 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Some upstreams reject any non-empty stop with an opaque 400. Drop it here
+	// (rather than in the converter) so the converter stays upstream-agnostic.
+	if h.cfg.StripStopSequences {
+		openaiReq.Stop = nil
+	}
+
 	inputPreview := extractInputPreview(req.Messages)
 
 	if req.Stream {
