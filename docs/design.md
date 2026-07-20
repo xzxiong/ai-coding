@@ -53,10 +53,15 @@ ai-coding is an HTTP proxy server that exposes the Anthropic Messages API interf
 
 1. Client sends `POST /v1/messages` with `"stream": true`
 2. Server opens SSE stream to OpenAI backend
-3. Server emits Anthropic SSE events in order:
-   - `message_start` → `content_block_start` → `content_block_delta`* → `content_block_stop` → `message_delta` → `message_stop`
-   - Tool calls are accumulated across chunks, then emitted as `tool_use` content blocks after text
+3. Server emits Anthropic SSE events incrementally:
+   - `message_start` (flushed immediately)
+   - text: `content_block_start` → `content_block_delta`* → `content_block_stop`
+   - tool calls: on first tool index, emit `content_block_start(tool_use)`; each `arguments` fragment becomes `input_json_delta` immediately; close with `content_block_stop` at finish
+   - Grok-style `reasoning_content` / `reasoning` is forwarded as text deltas so thinking tokens are not dropped
+   - end with `message_delta` → `message_stop`
 4. After stream completes, usage is recorded (from final chunk via stream_options.include_usage)
+
+See also: [sse-hang-blank-hatching.md](./sse-hang-blank-hatching.md) for the 2026-07-20 hang diagnosis (blank UI while tokens rise).
 
 ## Token Usage Tracking
 

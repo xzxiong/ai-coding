@@ -101,8 +101,10 @@ The file is sourced as a shell script — it exports `OPENAI_BASE_URL`, `OPENAI_
 - `active` file holds local env vars (gitignored, contains API keys)
 - Model names pass through as-is to upstream — no mapping in proxy
 - Streaming: usage chunk arrives after finish_reason chunk (don't break loop early)
-- Tool calls are accumulated across stream deltas, then emitted as Anthropic content blocks
+- Tool calls stream incrementally: first tool delta opens `tool_use`, each `arguments` fragment is `input_json_delta`
+- Grok-style `reasoning_content` / `reasoning` is forwarded as text deltas so the UI is not blank while thinking tokens burn
 
 ## Known Issues
 
 - `deepseek-v4-flash` fails tool calling with large context (50K+) and many tools (48+). Use `deepseek-v4-pro` for tool-heavy sessions. See [#1](https://github.com/xzxiong/ai-coding/issues/1).
+- Historical: blank Claude Code `Hatching...` with rising tokens was caused by buffering tool-call SSE until upstream finished. Fixed 2026-07-20 — tool args now stream as incremental `input_json_delta`. See [docs/sse-hang-blank-hatching.md](docs/sse-hang-blank-hatching.md).

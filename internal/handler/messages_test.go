@@ -337,6 +337,78 @@ func TestMessagesHandler_StreamToolCalls(t *testing.T) {
 	if !strings.Contains(respBody, "tool_use") {
 		t.Error("missing tool_use content block type")
 	}
+	if !strings.Contains(respBody, "input_json_delta") {
+		t.Error("missing input_json_delta for tool args")
+	}
+	// Incremental tool args must be emitted as fragments (JSON-escaped in SSE payload).
+	if !strings.Contains(respBody, `partial_json":"{\"city\":"`) && !strings.Contains(respBody, `"partial_json":"{\"city\":"`) {
+		// Accept either compact or spaced JSON encoding of the first fragment.
+		if !strings.Contains(respBody, `{\"city\":`) {
+			t.Error("missing first tool-args fragment")
+		}
+	}
+	if !strings.Contains(respBody, `\"NYC\"}`) {
+		t.Error("missing second tool-args fragment")
+	}
+	// Ensure fragments were not collapsed into a single full args blob only.
+	// First fragment and second fragment should each appear as partial_json values.
+	firstFrag := strings.Index(respBody, `{\"city\":`)
+	secondFrag := strings.Index(respBody, `\"NYC\"}`)
+	if firstFrag < 0 || secondFrag < 0 || firstFrag > secondFrag {
+		t.Error("expected incremental tool-args fragments in order")
+	}
+	if !strings.Contains(respBody, "event: message_stop") {
+		t.Error("missing message_stop event")
+	}
+	// Text block must close before tool_use starts.
+	textStop := strings.Index(respBody, `"type":"content_block_stop","index":0`)
+	if textStop < 0 {
+		textStop = strings.Index(respBody, `"type": "content_block_stop", "index": 0`)
+	}
+	toolStart := strings.Index(respBody, `"type":"tool_use"`)
+	if toolStart < 0 {
+		toolStart = strings.Index(respBody, `"type": "tool_use"`)
+	}
+	if textStop < 0 || toolStart < 0 || textStop > toolStart {
+		t.Error("expected text content_block_stop before tool_use start")
+	}
+}
+
+func TestMessagesHandler_StreamReasoningContent(t *testing.T) {
+	chunks := []string{
+		`{"id":"chatcmpl-r","object":"chat.completion.chunk","created":1700000000,"model":"grok-4.5","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"thinking..."},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-r","object":"chat.completion.chunk","created":1700000000,"model":"grok-4.5","choices":[{"index":0,"delta":{"content":" done"},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-r","object":"chat.completion.chunk","created":1700000000,"model":"grok-4.5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":4,"total_tokens":9}}`,
+	}
+
+	server := setupMockOpenAIStream(t, chunks)
+	defer server.Close()
+
+	cfg := &config.Config{
+		OpenAIBaseURL: server.URL,
+		OpenAIAPIKey:  "test-key",
+		DefaultModel:  "gpt-4o",
+	}
+	handler := NewMessagesHandler(cfg)
+
+	body := `{"model":"grok-4.5","max_tokens":128,"stream":true,"messages":[{"role":"user","content":"Hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	respBody := rec.Body.String()
+	if !strings.Contains(respBody, "thinking...") {
+		t.Error("missing reasoning_content forwarded as text")
+	}
+	if !strings.Contains(respBody, " done") {
+		t.Error("missing content text")
+	}
 	if !strings.Contains(respBody, "event: message_stop") {
 		t.Error("missing message_stop event")
 	}

@@ -148,21 +148,123 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 	msgStart := proxy.BuildStreamMessageStart(reqModel)
 	writeSSE(w, "message_start", msgStart)
+	flusher.Flush()
 
 	var streamUsage *model.OpenAIUsage
-	var blockIndex int
-	var textBlockStarted bool
+	var nextBlockIndex int
+	var textBlockIndex int = -1
 	var finishReason string
 	var textContent strings.Builder
 
 	type toolCallAccum struct {
-		ID        string
-		Name      string
-		Arguments string
+		ID         string
+		Name       string
+		Arguments  string
+		BlockIndex int
+		Started    bool
+		Stopped    bool
 	}
 	var toolCalls []toolCallAccum
 
+	// Close any open text block before starting tool blocks so Anthropic clients
+	// always see non-overlapping content blocks.
+	closeTextBlock := func() {
+		if textBlockIndex < 0 {
+			return
+		}
+		writeSSE(w, "content_block_stop", model.AnthropicContentBlockStop{
+			Type:  "content_block_stop",
+			Index: textBlockIndex,
+		})
+		textBlockIndex = -1
+	}
+
+	emitTextDelta := func(text string) {
+		if text == "" {
+			return
+		}
+		textContent.WriteString(text)
+		if textBlockIndex < 0 {
+			textBlockIndex = nextBlockIndex
+			nextBlockIndex++
+			writeSSE(w, "content_block_start", model.AnthropicContentBlockStart{
+				Type:  "content_block_start",
+				Index: textBlockIndex,
+				ContentBlock: model.AnthropicContentBlock{
+					Type: "text",
+					Text: "",
+				},
+			})
+		}
+		writeSSE(w, "content_block_delta", model.AnthropicContentBlockDelta{
+			Type:  "content_block_delta",
+			Index: textBlockIndex,
+			Delta: model.AnthropicContentBlock{Type: "text_delta", Text: text},
+		})
+		flusher.Flush()
+	}
+
+	ensureToolStarted := func(idx int) {
+		for idx >= len(toolCalls) {
+			toolCalls = append(toolCalls, toolCallAccum{BlockIndex: -1})
+		}
+		tc := &toolCalls[idx]
+		if tc.Started {
+			return
+		}
+		closeTextBlock()
+		tc.BlockIndex = nextBlockIndex
+		nextBlockIndex++
+		tc.Started = true
+		writeSSE(w, "content_block_start", model.AnthropicContentBlockStart{
+			Type:  "content_block_start",
+			Index: tc.BlockIndex,
+			ContentBlock: model.AnthropicContentBlock{
+				Type:  "tool_use",
+				ID:    tc.ID,
+				Name:  tc.Name,
+				Input: json.RawMessage("{}"),
+			},
+		})
+		flusher.Flush()
+	}
+
+	emitToolArgsDelta := func(idx int, argsFrag string) {
+		if argsFrag == "" {
+			return
+		}
+		ensureToolStarted(idx)
+		tc := &toolCalls[idx]
+		tc.Arguments += argsFrag
+		writeSSE(w, "content_block_delta", map[string]any{
+			"type":  "content_block_delta",
+			"index": tc.BlockIndex,
+			"delta": map[string]any{
+				"type":         "input_json_delta",
+				"partial_json": argsFrag,
+			},
+		})
+		flusher.Flush()
+	}
+
+	stopToolBlocks := func() {
+		for i := range toolCalls {
+			tc := &toolCalls[i]
+			if !tc.Started || tc.Stopped {
+				continue
+			}
+			writeSSE(w, "content_block_stop", model.AnthropicContentBlockStop{
+				Type:  "content_block_stop",
+				Index: tc.BlockIndex,
+			})
+			tc.Stopped = true
+		}
+	}
+
 	scanner := bufio.NewScanner(resp.Body)
+	// Large tool-call argument lines can exceed the default 64KB token limit.
+	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
@@ -179,7 +281,7 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 		var chunk model.OpenAIStreamResponse
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			log.Printf("WARN: malformed stream chunk: %v", err)
+			log.Printf("[%s] WARN: malformed stream chunk: %v", rid, err)
 			continue
 		}
 
@@ -193,34 +295,37 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 		delta := chunk.Choices[0].Delta
 
+		// Grok / some OpenAI-compat backends stream thinking separately.
+		// Surface it as text so the client is not blank while tokens burn.
+		if reasoning := delta.ReasoningContent; reasoning != "" {
+			emitTextDelta(reasoning)
+		} else if reasoning := delta.Reasoning; reasoning != "" {
+			emitTextDelta(reasoning)
+		}
+
 		if delta.Content != "" {
-			textContent.WriteString(delta.Content)
-			if !textBlockStarted {
-				writeSSE(w, "content_block_start", model.AnthropicContentBlockStart{
-					Type: "content_block_start", Index: blockIndex,
-					ContentBlock: model.AnthropicContentBlock{Type: "text", Text: ""},
-				})
-				textBlockStarted = true
-			}
-			writeSSE(w, "content_block_delta", model.AnthropicContentBlockDelta{
-				Type: "content_block_delta", Index: blockIndex,
-				Delta: model.AnthropicContentBlock{Type: "text_delta", Text: delta.Content},
-			})
-			flusher.Flush()
+			emitTextDelta(delta.Content)
 		}
 
 		for _, tc := range delta.ToolCalls {
 			for tc.Index >= len(toolCalls) {
-				toolCalls = append(toolCalls, toolCallAccum{})
+				toolCalls = append(toolCalls, toolCallAccum{BlockIndex: -1})
 			}
+			accum := &toolCalls[tc.Index]
 			if tc.ID != "" {
-				toolCalls[tc.Index].ID = tc.ID
+				accum.ID = tc.ID
 			}
 			if tc.Function.Name != "" {
-				toolCalls[tc.Index].Name = tc.Function.Name
+				accum.Name = tc.Function.Name
+			}
+
+			// Open the tool block as soon as the slot appears so clients see
+			// progress while large argument JSON is still streaming.
+			if tc.ID != "" || tc.Function.Name != "" || tc.Function.Arguments != "" {
+				ensureToolStarted(tc.Index)
 			}
 			if tc.Function.Arguments != "" {
-				toolCalls[tc.Index].Arguments += tc.Function.Arguments
+				emitToolArgsDelta(tc.Index, tc.Function.Arguments)
 			}
 		}
 
@@ -243,28 +348,14 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 		return
 	}
 
-	if textBlockStarted {
-		writeSSE(w, "content_block_stop", model.AnthropicContentBlockStop{Type: "content_block_stop", Index: blockIndex})
-		blockIndex++
-	}
-
-	for _, tc := range toolCalls {
-		writeSSE(w, "content_block_start", model.AnthropicContentBlockStart{
-			Type: "content_block_start", Index: blockIndex,
-			ContentBlock: model.AnthropicContentBlock{
-				Type: "tool_use", ID: tc.ID, Name: tc.Name,
-				Input: json.RawMessage("{}"),
-			},
-		})
-		if tc.Arguments != "" {
-			writeSSE(w, "content_block_delta", map[string]any{
-				"type": "content_block_delta", "index": blockIndex,
-				"delta": map[string]any{"type": "input_json_delta", "partial_json": tc.Arguments},
-			})
+	closeTextBlock()
+	// Ensure any tool that only got metadata still emits a closed block.
+	for i := range toolCalls {
+		if toolCalls[i].ID != "" || toolCalls[i].Name != "" || toolCalls[i].Arguments != "" {
+			ensureToolStarted(i)
 		}
-		writeSSE(w, "content_block_stop", model.AnthropicContentBlockStop{Type: "content_block_stop", Index: blockIndex})
-		blockIndex++
 	}
+	stopToolBlocks()
 	flusher.Flush()
 
 	duration := time.Since(start).Milliseconds()
@@ -276,6 +367,9 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 	if len(toolCalls) > 0 {
 		for i, tc := range toolCalls {
+			if tc.Name == "" && tc.Arguments == "" && tc.ID == "" {
+				continue
+			}
 			log.Printf("[%s] REQ model=%s stream=true tool[%d]=%s args=%s",
 				rid, reqModel, i, tc.Name, truncate(tc.Arguments, 80))
 		}
@@ -291,7 +385,14 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 	h.recordUsage(reqModel, inTok, outTok, true, duration, inputPreview)
 
 	stopReason := "end_turn"
-	if finishReason == "tool_calls" || len(toolCalls) > 0 {
+	hasTool := false
+	for _, tc := range toolCalls {
+		if tc.Started {
+			hasTool = true
+			break
+		}
+	}
+	if finishReason == "tool_calls" || hasTool {
 		stopReason = "tool_use"
 	}
 
