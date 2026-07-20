@@ -42,14 +42,15 @@ That matches the blank hatching UI with rising tokens.
 
 Implemented in `internal/handler/messages.go`:
 
-1. **Incremental tool_call → Anthropic SSE**
-   - first sight of a tool index → `content_block_start` (`tool_use`)
-   - each `arguments` fragment → `content_block_delta` (`input_json_delta`) immediately
-   - stream end / finish → `content_block_stop`
-2. **Flush after `message_start`** and after each tool delta
-3. **Map `reasoning_content` / `reasoning` into text deltas** so thinking is not dropped
+1. **Incremental tool_call → Anthropic SSE (single open block)**
+   - stream the lowest unfinished tool index: `content_block_start` → `input_json_delta`* → `content_block_stop`
+   - later tools accumulate until the open tool finishes, then emit in index order
+   - avoids Anthropic concurrent-open-block protocol violations on multi-tool streams
+2. **Flush after `message_start`** and after each tool/text delta
+3. **Map `reasoning_content` / `reasoning` into text deltas** before tools start so thinking is not dropped
 4. **Raise scanner buffer** (1 MiB start, 16 MiB max) for large tool-argument lines
-5. Close open text/tool blocks cleanly before `message_delta` / `message_stop`
+5. Close open text/tool blocks cleanly before `message_delta` / `message_stop`, and also before stream `error` events
+6. Delay `content_block_start` until `id` or `name` is known when possible (args-first chunks accumulate first)
 
 ## How to Verify
 

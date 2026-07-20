@@ -101,8 +101,8 @@ The file is sourced as a shell script — it exports `OPENAI_BASE_URL`, `OPENAI_
 - `active` file holds local env vars (gitignored, contains API keys)
 - Model names pass through as-is to upstream — no mapping in proxy
 - Streaming: usage chunk arrives after finish_reason chunk (don't break loop early)
-- Tool calls stream incrementally: first tool delta opens `tool_use`, each `arguments` fragment is `input_json_delta`
-- Grok-style `reasoning_content` / `reasoning` is forwarded as text deltas so the UI is not blank while thinking tokens burn
+- Tool calls stream with one open Anthropic content block at a time: lowest unfinished tool gets incremental `input_json_delta`; later tools emit after it stops
+- Grok-style `reasoning_content` / `reasoning` is forwarded as text before tools start so the UI is not blank while thinking tokens burn
 
 ## Known Issues
 

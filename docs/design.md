@@ -53,11 +53,11 @@ ai-coding is an HTTP proxy server that exposes the Anthropic Messages API interf
 
 1. Client sends `POST /v1/messages` with `"stream": true`
 2. Server opens SSE stream to OpenAI backend
-3. Server emits Anthropic SSE events incrementally:
+3. Server emits Anthropic SSE events with **strict sequential content blocks** (only one open at a time):
    - `message_start` (flushed immediately)
-   - text: `content_block_start` → `content_block_delta`* → `content_block_stop`
-   - tool calls: on first tool index, emit `content_block_start(tool_use)`; each `arguments` fragment becomes `input_json_delta` immediately; close with `content_block_stop` at finish
-   - Grok-style `reasoning_content` / `reasoning` is forwarded as text deltas so thinking tokens are not dropped
+   - text: `content_block_start` → `content_block_delta`* → `content_block_stop` (text stops before any tool)
+   - tool calls: stream the lowest unfinished tool index incrementally (`content_block_start` → `input_json_delta`* → `content_block_stop`); later tools accumulate until the open tool is finished, then emit in index order
+   - Grok-style `reasoning_content` / `reasoning` is forwarded as text before tools start; after tools begin, late text is not reopened mid-stream
    - end with `message_delta` → `message_stop`
 4. After stream completes, usage is recorded (from final chunk via stream_options.include_usage)
 
@@ -144,7 +144,14 @@ Write throughput is well above proxy usage (~1 req/s typical, bounded by LLM lat
 
 ### Streaming Tool Calls
 
-Tool calls arrive incrementally across multiple chunks. The handler accumulates function name and argument fragments per tool index, then emits complete `tool_use` content blocks after text content ends.
+Tool calls arrive incrementally across multiple OpenAI chunks (often interleaved by index). The handler:
+
+1. Accumulates `id` / `name` / `arguments` per tool index
+2. Opens at most one Anthropic `tool_use` content block at a time (lowest unfinished index)
+3. Streams that tool's new argument fragments as `input_json_delta` immediately
+4. On stream end, finishes the open tool, then emits any remaining tools in index order
+
+This keeps Claude Code responsive for large single-tool writes while staying within Anthropic's sequential content-block protocol.
 
 ## Multi-Modal Content
 

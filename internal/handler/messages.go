@@ -153,21 +153,31 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 	var streamUsage *model.OpenAIUsage
 	var nextBlockIndex int
 	var textBlockIndex int = -1
+	// Anthropic SSE allows only one open content block at a time. openToolIdx is
+	// the currently open tool_use block (-1 = none). Other tools accumulate in
+	// memory and are emitted in index order after the open one is stopped.
+	var openToolIdx = -1
 	var finishReason string
 	var textContent strings.Builder
+	// Text/reasoning that arrives while a tool block is open is buffered and
+	// only used for logging — reopening text would violate sequential blocks.
+	var deferredText strings.Builder
 
 	type toolCallAccum struct {
-		ID         string
-		Name       string
-		Arguments  string
-		BlockIndex int
-		Started    bool
-		Stopped    bool
+		ID          string
+		Name        string
+		Arguments   string
+		EmittedArgs int
+		BlockIndex  int
+		Started     bool
+		Stopped     bool
 	}
 	var toolCalls []toolCallAccum
 
-	// Close any open text block before starting tool blocks so Anthropic clients
-	// always see non-overlapping content blocks.
+	hasToolData := func(tc *toolCallAccum) bool {
+		return tc.ID != "" || tc.Name != "" || tc.Arguments != ""
+	}
+
 	closeTextBlock := func() {
 		if textBlockIndex < 0 {
 			return
@@ -177,6 +187,142 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 			Index: textBlockIndex,
 		})
 		textBlockIndex = -1
+		flusher.Flush()
+	}
+
+	stopTool := func(idx int) {
+		if idx < 0 || idx >= len(toolCalls) {
+			return
+		}
+		tc := &toolCalls[idx]
+		if !tc.Started || tc.Stopped {
+			return
+		}
+		writeSSE(w, "content_block_stop", model.AnthropicContentBlockStop{
+			Type:  "content_block_stop",
+			Index: tc.BlockIndex,
+		})
+		tc.Stopped = true
+		if openToolIdx == idx {
+			openToolIdx = -1
+		}
+		flusher.Flush()
+	}
+
+	// Lowest-index unfinished tool that has any data.
+	nextToolIdx := func() int {
+		for i := range toolCalls {
+			tc := &toolCalls[i]
+			if tc.Stopped || !hasToolData(tc) {
+				continue
+			}
+			return i
+		}
+		return -1
+	}
+
+	startToolBlock := func(idx int, force bool) bool {
+		tc := &toolCalls[idx]
+		if tc.Started {
+			return true
+		}
+		// Avoid empty id/name on content_block_start when possible. At finalize
+		// (force=true) synthesize an id so the client still gets a closed block.
+		if tc.ID == "" && tc.Name == "" && !force {
+			return false
+		}
+		if tc.ID == "" && force {
+			tc.ID = fmt.Sprintf("toolu_%d", idx)
+		}
+		closeTextBlock()
+		tc.BlockIndex = nextBlockIndex
+		nextBlockIndex++
+		tc.Started = true
+		openToolIdx = idx
+		writeSSE(w, "content_block_start", model.AnthropicContentBlockStart{
+			Type:  "content_block_start",
+			Index: tc.BlockIndex,
+			ContentBlock: model.AnthropicContentBlock{
+				Type:  "tool_use",
+				ID:    tc.ID,
+				Name:  tc.Name,
+				Input: json.RawMessage("{}"),
+			},
+		})
+		flusher.Flush()
+		return true
+	}
+
+	emitUnsentArgs := func(idx int) {
+		tc := &toolCalls[idx]
+		if !tc.Started || tc.Stopped {
+			return
+		}
+		if tc.EmittedArgs >= len(tc.Arguments) {
+			return
+		}
+		frag := tc.Arguments[tc.EmittedArgs:]
+		tc.EmittedArgs = len(tc.Arguments)
+		writeSSE(w, "content_block_delta", map[string]any{
+			"type":  "content_block_delta",
+			"index": tc.BlockIndex,
+			"delta": map[string]any{
+				"type":         "input_json_delta",
+				"partial_json": frag,
+			},
+		})
+		flusher.Flush()
+	}
+
+	// Stream at most one tool_use block: the lowest unfinished index. Later
+	// tools stay buffered until finalizeTools stops the open one and walks on.
+	progressToolEmission := func() {
+		i := nextToolIdx()
+		if i < 0 {
+			return
+		}
+		// A different tool is already open — keep accumulating only.
+		if openToolIdx >= 0 && openToolIdx != i {
+			if openToolIdx < len(toolCalls) {
+				emitUnsentArgs(openToolIdx)
+			}
+			return
+		}
+		if !startToolBlock(i, false) {
+			return
+		}
+		emitUnsentArgs(i)
+	}
+
+	// Close every tool in index order. force-start remaining tools so partial
+	// metadata still becomes a complete Anthropic block sequence.
+	finalizeTools := func() {
+		closeTextBlock()
+		for i := range toolCalls {
+			tc := &toolCalls[i]
+			if tc.Stopped || !hasToolData(tc) {
+				continue
+			}
+			if openToolIdx >= 0 && openToolIdx != i {
+				stopTool(openToolIdx)
+			}
+			if !tc.Started {
+				startToolBlock(i, true)
+			}
+			emitUnsentArgs(i)
+			stopTool(i)
+		}
+		if openToolIdx >= 0 {
+			stopTool(openToolIdx)
+		}
+	}
+
+	// Close any open block before emitting a terminal error event.
+	closeOpenBlocks := func() {
+		closeTextBlock()
+		if openToolIdx >= 0 {
+			stopTool(openToolIdx)
+		}
 	}
 
 	emitTextDelta := func(text string) {
@@ -184,6 +330,20 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 			return
 		}
 		textContent.WriteString(text)
+		// Do not open/reopen text while a tool block is active — Anthropic
+		// clients require sequential content blocks.
+		if openToolIdx >= 0 {
+			deferredText.WriteString(text)
+			return
+		}
+		// Once any tool has started, further text would sit between/after tool
+		// blocks mid-stream; keep it for logs only until finalize (no reopen).
+		for _, tc := range toolCalls {
+			if tc.Started {
+				deferredText.WriteString(text)
+				return
+			}
+		}
 		if textBlockIndex < 0 {
 			textBlockIndex = nextBlockIndex
 			nextBlockIndex++
@@ -202,63 +362,6 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 			Delta: model.AnthropicContentBlock{Type: "text_delta", Text: text},
 		})
 		flusher.Flush()
-	}
-
-	ensureToolStarted := func(idx int) {
-		for idx >= len(toolCalls) {
-			toolCalls = append(toolCalls, toolCallAccum{BlockIndex: -1})
-		}
-		tc := &toolCalls[idx]
-		if tc.Started {
-			return
-		}
-		closeTextBlock()
-		tc.BlockIndex = nextBlockIndex
-		nextBlockIndex++
-		tc.Started = true
-		writeSSE(w, "content_block_start", model.AnthropicContentBlockStart{
-			Type:  "content_block_start",
-			Index: tc.BlockIndex,
-			ContentBlock: model.AnthropicContentBlock{
-				Type:  "tool_use",
-				ID:    tc.ID,
-				Name:  tc.Name,
-				Input: json.RawMessage("{}"),
-			},
-		})
-		flusher.Flush()
-	}
-
-	emitToolArgsDelta := func(idx int, argsFrag string) {
-		if argsFrag == "" {
-			return
-		}
-		ensureToolStarted(idx)
-		tc := &toolCalls[idx]
-		tc.Arguments += argsFrag
-		writeSSE(w, "content_block_delta", map[string]any{
-			"type":  "content_block_delta",
-			"index": tc.BlockIndex,
-			"delta": map[string]any{
-				"type":         "input_json_delta",
-				"partial_json": argsFrag,
-			},
-		})
-		flusher.Flush()
-	}
-
-	stopToolBlocks := func() {
-		for i := range toolCalls {
-			tc := &toolCalls[i]
-			if !tc.Started || tc.Stopped {
-				continue
-			}
-			writeSSE(w, "content_block_stop", model.AnthropicContentBlockStop{
-				Type:  "content_block_stop",
-				Index: tc.BlockIndex,
-			})
-			tc.Stopped = true
-		}
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -318,15 +421,11 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 			if tc.Function.Name != "" {
 				accum.Name = tc.Function.Name
 			}
-
-			// Open the tool block as soon as the slot appears so clients see
-			// progress while large argument JSON is still streaming.
-			if tc.ID != "" || tc.Function.Name != "" || tc.Function.Arguments != "" {
-				ensureToolStarted(tc.Index)
-			}
 			if tc.Function.Arguments != "" {
-				emitToolArgsDelta(tc.Index, tc.Function.Arguments)
+				accum.Arguments += tc.Function.Arguments
 			}
+			// Incremental emit for the current frontier tool only.
+			progressToolEmission()
 		}
 
 		if chunk.Choices[0].FinishReason != nil {
@@ -336,6 +435,9 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("[%s] ERROR: stream read error: %v", rid, err)
+		// Close any half-open content blocks before the error event so clients
+		// do not see a dangling tool_use/text block.
+		closeOpenBlocks()
 		// Send Anthropic error event so Claude Code retries instead of seeing a silent empty response.
 		writeSSE(w, "error", map[string]any{
 			"type": "error",
@@ -348,14 +450,7 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 		return
 	}
 
-	closeTextBlock()
-	// Ensure any tool that only got metadata still emits a closed block.
-	for i := range toolCalls {
-		if toolCalls[i].ID != "" || toolCalls[i].Name != "" || toolCalls[i].Arguments != "" {
-			ensureToolStarted(i)
-		}
-	}
-	stopToolBlocks()
+	finalizeTools()
 	flusher.Flush()
 
 	duration := time.Since(start).Milliseconds()

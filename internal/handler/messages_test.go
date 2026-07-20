@@ -414,6 +414,122 @@ func TestMessagesHandler_StreamReasoningContent(t *testing.T) {
 	}
 }
 
+func TestMessagesHandler_StreamMultiToolSequential(t *testing.T) {
+	// OpenAI often interleaves multi-tool argument deltas. Anthropic requires
+	// sequential content blocks: stop tool 0 before starting tool 1.
+	chunks := []string{
+		`{"id":"chatcmpl-mt","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-mt","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"tool_a","arguments":""}}]},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-mt","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"tool_b","arguments":""}}]},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-mt","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"x\":1}"}}]},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-mt","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"y\":2}"}}]},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-mt","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":8,"total_tokens":18}}`,
+	}
+
+	server := setupMockOpenAIStream(t, chunks)
+	defer server.Close()
+
+	cfg := &config.Config{OpenAIBaseURL: server.URL, OpenAIAPIKey: "test-key", DefaultModel: "gpt-4o"}
+	handler := NewMessagesHandler(cfg)
+
+	body := `{"model":"claude-sonnet-4-6","max_tokens":1024,"stream":true,"tools":[{"name":"tool_a","description":"A","input_schema":{"type":"object"}},{"name":"tool_b","description":"B","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"run both"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	respBody := rec.Body.String()
+
+	if !strings.Contains(respBody, "tool_a") || !strings.Contains(respBody, "tool_b") {
+		t.Error("missing tool names in stream")
+	}
+	if !strings.Contains(respBody, `{\"x\":1}`) && !strings.Contains(respBody, `{"x":1}`) {
+		if !strings.Contains(respBody, `x`) {
+			t.Error("missing tool_a args")
+		}
+	}
+	if !strings.Contains(respBody, `{\"y\":2}`) && !strings.Contains(respBody, `y`) {
+		t.Error("missing tool_b args")
+	}
+
+	// Parse event stream and ensure content_block_start never appears while a
+	// previous content block is still open.
+	type openState struct {
+		open bool
+	}
+	var open openState
+	for _, line := range strings.Split(respBody, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "{}" || data == "" {
+			continue
+		}
+		var evt map[string]any
+		if err := json.Unmarshal([]byte(data), &evt); err != nil {
+			continue
+		}
+		typ, _ := evt["type"].(string)
+		switch typ {
+		case "content_block_start":
+			if open.open {
+				t.Fatalf("content_block_start while previous block still open: %s", data)
+			}
+			open.open = true
+		case "content_block_stop":
+			if !open.open {
+				t.Fatalf("content_block_stop with no open block: %s", data)
+			}
+			open.open = false
+		}
+	}
+	if open.open {
+		t.Error("stream ended with an open content block")
+	}
+}
+
+func TestMessagesHandler_StreamToolArgsBeforeID(t *testing.T) {
+	// Some OpenAI-compat backends send argument fragments before id/name.
+	// Do not freeze empty id/name on content_block_start.
+	chunks := []string{
+		`{"id":"chatcmpl-ord","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-ord","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"q\":"}}]},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-ord","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_late","type":"function","function":{"name":"search","arguments":"\"x\"}"}}]},"finish_reason":null}]}`,
+		`{"id":"chatcmpl-ord","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}`,
+	}
+
+	server := setupMockOpenAIStream(t, chunks)
+	defer server.Close()
+
+	cfg := &config.Config{OpenAIBaseURL: server.URL, OpenAIAPIKey: "test-key", DefaultModel: "gpt-4o"}
+	handler := NewMessagesHandler(cfg)
+
+	body := `{"model":"claude-sonnet-4-6","max_tokens":128,"stream":true,"tools":[{"name":"search","description":"s","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"q"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	respBody := rec.Body.String()
+	if !strings.Contains(respBody, "call_late") {
+		t.Error("expected tool id from later chunk on content_block_start")
+	}
+	if !strings.Contains(respBody, "search") {
+		t.Error("expected tool name from later chunk")
+	}
+	// Ensure we never started with empty id+name only.
+	if strings.Contains(respBody, `"id":"","name":""`) || strings.Contains(respBody, `"id": "", "name": ""`) {
+		t.Error("tool_use started with empty id and name")
+	}
+}
+
 func TestMessagesHandler_NonStreamToolCalls(t *testing.T) {
 	mockResp := model.OpenAIResponse{
 		ID:      "chatcmpl-tool",
