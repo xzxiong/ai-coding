@@ -153,12 +153,17 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 	var streamUsage *model.OpenAIUsage
 	var nextBlockIndex int
 	var textBlockIndex int = -1
+	// Upstream reasoning (reasoning_content) maps to a separate Anthropic
+	// "thinking" content block so it is never concatenated into the answer's
+	// text block. -1 = none open.
+	var thinkingBlockIndex int = -1
 	// Anthropic SSE allows only one open content block at a time. openToolIdx is
 	// the currently open tool_use block (-1 = none). Other tools accumulate in
 	// memory and are emitted in index order after the open one is stopped.
 	var openToolIdx = -1
 	var finishReason string
 	var textContent strings.Builder
+	var thinkingContent strings.Builder
 	// Text/reasoning that arrives while a tool block is open is buffered and
 	// only used for logging — reopening text would violate sequential blocks.
 	var deferredText strings.Builder
@@ -187,6 +192,18 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 			Index: textBlockIndex,
 		})
 		textBlockIndex = -1
+		flusher.Flush()
+	}
+
+	closeThinkingBlock := func() {
+		if thinkingBlockIndex < 0 {
+			return
+		}
+		writeSSE(w, "content_block_stop", model.AnthropicContentBlockStop{
+			Type:  "content_block_stop",
+			Index: thinkingBlockIndex,
+		})
+		thinkingBlockIndex = -1
 		flusher.Flush()
 	}
 
@@ -234,6 +251,7 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 		if tc.ID == "" && force {
 			tc.ID = fmt.Sprintf("toolu_%d", idx)
 		}
+		closeThinkingBlock()
 		closeTextBlock()
 		tc.BlockIndex = nextBlockIndex
 		nextBlockIndex++
@@ -297,6 +315,7 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 	// Close every tool in index order. force-start remaining tools so partial
 	// metadata still becomes a complete Anthropic block sequence.
 	finalizeTools := func() {
+		closeThinkingBlock()
 		closeTextBlock()
 		for i := range toolCalls {
 			tc := &toolCalls[i]
@@ -319,10 +338,48 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 	// Close any open block before emitting a terminal error event.
 	closeOpenBlocks := func() {
+		closeThinkingBlock()
 		closeTextBlock()
 		if openToolIdx >= 0 {
 			stopTool(openToolIdx)
 		}
+	}
+
+	// Reasoning tokens map to a separate "thinking" block that always precedes
+	// the answer's text block. Once the answer text or any tool has started,
+	// thinking is complete: further reasoning would violate sequential blocks,
+	// so keep it for logs only (no reopen).
+	emitThinkingDelta := func(text string) {
+		if text == "" {
+			return
+		}
+		thinkingContent.WriteString(text)
+		if openToolIdx >= 0 || textBlockIndex >= 0 {
+			return
+		}
+		for _, tc := range toolCalls {
+			if tc.Started {
+				return
+			}
+		}
+		if thinkingBlockIndex < 0 {
+			thinkingBlockIndex = nextBlockIndex
+			nextBlockIndex++
+			writeSSE(w, "content_block_start", model.AnthropicContentBlockStart{
+				Type:  "content_block_start",
+				Index: thinkingBlockIndex,
+				ContentBlock: model.AnthropicContentBlock{
+					Type:     "thinking",
+					Thinking: "",
+				},
+			})
+		}
+		writeSSE(w, "content_block_delta", model.AnthropicContentBlockDelta{
+			Type:  "content_block_delta",
+			Index: thinkingBlockIndex,
+			Delta: model.AnthropicContentBlock{Type: "thinking_delta", Thinking: text},
+		})
+		flusher.Flush()
 	}
 
 	emitTextDelta := func(text string) {
@@ -344,6 +401,9 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 				return
 			}
 		}
+		// The answer has begun: close the thinking block so text is a distinct,
+		// sequential block rather than a continuation of reasoning.
+		closeThinkingBlock()
 		if textBlockIndex < 0 {
 			textBlockIndex = nextBlockIndex
 			nextBlockIndex++
@@ -398,12 +458,13 @@ func (h *MessagesHandler) handleStream(w http.ResponseWriter, r *http.Request, o
 
 		delta := chunk.Choices[0].Delta
 
-		// Grok / some OpenAI-compat backends stream thinking separately.
-		// Surface it as text so the client is not blank while tokens burn.
+		// Grok / some OpenAI-compat backends stream thinking separately. Surface
+		// it as a distinct Anthropic "thinking" block so the client is not blank
+		// while tokens burn, without concatenating reasoning into the answer.
 		if reasoning := delta.ReasoningContent; reasoning != "" {
-			emitTextDelta(reasoning)
+			emitThinkingDelta(reasoning)
 		} else if reasoning := delta.Reasoning; reasoning != "" {
-			emitTextDelta(reasoning)
+			emitThinkingDelta(reasoning)
 		}
 
 		if delta.Content != "" {
@@ -548,7 +609,6 @@ func extractInputPreview(messages []model.AnthropicMessage) string {
 	}
 	return ""
 }
-
 
 // contextOverflowKeywords are substrings a well-behaved upstream includes in
 // its error body when the prompt exceeds the model's context window. The

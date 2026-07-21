@@ -404,13 +404,116 @@ func TestMessagesHandler_StreamReasoningContent(t *testing.T) {
 
 	respBody := rec.Body.String()
 	if !strings.Contains(respBody, "thinking...") {
-		t.Error("missing reasoning_content forwarded as text")
+		t.Error("missing reasoning_content forwarded")
 	}
 	if !strings.Contains(respBody, " done") {
 		t.Error("missing content text")
 	}
 	if !strings.Contains(respBody, "event: message_stop") {
 		t.Error("missing message_stop event")
+	}
+
+	// Reasoning must land in a separate "thinking" block, not be concatenated
+	// into the answer's text block (the fusion bug this guards against).
+	if !strings.Contains(respBody, `"type":"thinking"`) {
+		t.Error("reasoning not emitted as a thinking content block")
+	}
+	if !strings.Contains(respBody, "thinking_delta") {
+		t.Error("reasoning not emitted via thinking_delta")
+	}
+
+	// The thinking block must close before the answer's text block opens, and
+	// reasoning text must not appear inside a text_delta.
+	thinkingStop := strings.Index(respBody, `"type":"content_block_stop","index":0`)
+	textStart := strings.Index(respBody, `"type":"text"`)
+	if thinkingStop < 0 || textStart < 0 || thinkingStop > textStart {
+		t.Error("expected thinking block to close before text block opens")
+	}
+	if strings.Contains(respBody, `"type":"text_delta","text":"thinking..."`) {
+		t.Error("reasoning leaked into the answer text block")
+	}
+}
+
+// Reasoning models draft the answer inside their reasoning stream, then emit
+// the real answer via content. The proxy must keep the two in separate,
+// sequential blocks — never fuse a reasoning draft onto the answer (the
+// "5.1.把 Pulumi..." corruption this reproduces).
+func TestMessagesHandler_StreamReasoningNotFusedWithAnswer(t *testing.T) {
+	chunks := []string{
+		`{"id":"c","object":"chat.completion.chunk","created":1700000000,"model":"grok","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"draft: tag 5.1."},"finish_reason":null}]}`,
+		`{"id":"c","object":"chat.completion.chunk","created":1700000000,"model":"grok","choices":[{"index":0,"delta":{"reasoning_content":" and more"},"finish_reason":null}]}`,
+		`{"id":"c","object":"chat.completion.chunk","created":1700000000,"model":"grok","choices":[{"index":0,"delta":{"content":"ANSWER_START"},"finish_reason":null}]}`,
+		`{"id":"c","object":"chat.completion.chunk","created":1700000000,"model":"grok","choices":[{"index":0,"delta":{"content":" here"},"finish_reason":null}]}`,
+		`{"id":"c","object":"chat.completion.chunk","created":1700000000,"model":"grok","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":6,"total_tokens":11}}`,
+	}
+
+	server := setupMockOpenAIStream(t, chunks)
+	defer server.Close()
+
+	cfg := &config.Config{OpenAIBaseURL: server.URL, OpenAIAPIKey: "test-key", DefaultModel: "gpt-4o"}
+	handler := NewMessagesHandler(cfg)
+
+	body := `{"model":"grok","max_tokens":128,"stream":true,"messages":[{"role":"user","content":"Hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	respBody := rec.Body.String()
+
+	// No text_delta may carry reasoning text; no thinking_delta may carry answer text.
+	for _, line := range strings.Split(respBody, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var evt map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &evt); err != nil {
+			continue
+		}
+		if evt["type"] != "content_block_delta" {
+			continue
+		}
+		delta, _ := evt["delta"].(map[string]any)
+		switch delta["type"] {
+		case "text_delta":
+			if txt, _ := delta["text"].(string); strings.Contains(txt, "draft") || strings.Contains(txt, "and more") {
+				t.Errorf("reasoning fused into answer text_delta: %q", txt)
+			}
+		case "thinking_delta":
+			if txt, _ := delta["thinking"].(string); strings.Contains(txt, "ANSWER_START") {
+				t.Errorf("answer fused into thinking_delta: %q", txt)
+			}
+		}
+	}
+
+	// Sequential-block invariant: exactly one block open at a time, none dangling.
+	open := false
+	for _, line := range strings.Split(respBody, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var evt map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &evt); err != nil {
+			continue
+		}
+		switch evt["type"] {
+		case "content_block_start":
+			if open {
+				t.Fatalf("content_block_start while previous block open: %s", line)
+			}
+			open = true
+		case "content_block_stop":
+			if !open {
+				t.Fatalf("content_block_stop with no open block: %s", line)
+			}
+			open = false
+		}
+	}
+	if open {
+		t.Error("stream ended with an open content block")
 	}
 }
 
