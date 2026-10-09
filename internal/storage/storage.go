@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -30,7 +32,10 @@ type Store struct {
 func New(filePath string) (*Store, error) {
 	db, err := bolt.Open(filePath, 0600, &bolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
-		return nil, err
+		if errors.Is(err, bolt.ErrTimeout) {
+			return nil, fmt.Errorf("open usage database %q: database is locked by another process; stop the existing instance or set DATA_FILE to a different path (and LISTEN_ADDR to a different port when running multiple instances): %w", filePath, err)
+		}
+		return nil, fmt.Errorf("open usage database %q: %w", filePath, err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists(bucketName)
