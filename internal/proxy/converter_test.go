@@ -339,6 +339,31 @@ func TestConvertUserBlocks_ToolResult(t *testing.T) {
 	}
 }
 
+func TestConvertUserBlocks_ToolResultAnthropicToolUseID(t *testing.T) {
+	raw := `{
+		"model": "claude-sonnet-4-6", "max_tokens": 1024,
+		"messages": [{
+			"role": "user",
+			"content": [{"type": "tool_result", "tool_use_id": "toolu_standard", "content": "done"}]
+		}]
+	}`
+
+	var req model.AnthropicRequest
+	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	result, err := ConvertAnthropicToOpenAI(&req, "")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if len(result.Messages) != 1 || result.Messages[0].Role != "tool" {
+		t.Fatalf("expected one tool message, got %+v", result.Messages)
+	}
+	if result.Messages[0].ToolCallID != "toolu_standard" {
+		t.Fatalf("expected tool_call_id toolu_standard, got %q", result.Messages[0].ToolCallID)
+	}
+}
+
 func TestConvertUserBlocks_ImageBase64(t *testing.T) {
 	raw := `{
 		"model": "claude-sonnet-4-6", "max_tokens": 1024,

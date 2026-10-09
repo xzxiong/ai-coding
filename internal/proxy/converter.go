@@ -182,7 +182,12 @@ func convertUserBlocks(blocks []map[string]any) ([]model.OpenAIMessage, error) {
 				ImageURL: &model.OpenAIImageURL{URL: buildImageURL(source)},
 			})
 		case "tool_result":
-			toolCallID, _ := block["tool_call_id"].(string)
+			// Anthropic calls this field tool_use_id. Keep accepting
+			// tool_call_id for compatibility with older clients.
+			toolCallID, _ := block["tool_use_id"].(string)
+			if toolCallID == "" {
+				toolCallID, _ = block["tool_call_id"].(string)
+			}
 			content := extractToolResultContent(block["content"])
 			messages = append(messages, model.OpenAIMessage{
 				Role:       "tool",
